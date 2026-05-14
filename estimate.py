@@ -1,14 +1,18 @@
 """Round-trip estimator for the BLP synthetic data.
 
-Loads the CSVs written by simulate.py, builds a pyblp.Problem with the same
-formulations and demographics, and calls problem.solve() starting from the
-true parameter values. Prints a side-by-side comparison of truth vs estimate.
+Loads CSVs written by simulate.py, builds a pyblp.Problem with matching
+formulations and demographics, and calls problem.solve() from one or more
+starting points. A clean round-trip (estimates near truth, GMM objective
+near zero) is the sanity check that the synthetic data is BLP-shaped.
 
-A clean round-trip (estimates near truth, objective near 0) is the
-definitive sanity check that the synthetic data is BLP-shaped.
+Example:
+  python estimate.py                         # default output/seed_0
+  python estimate.py --output-dir output/seed_1
+  python estimate.py --method 2s --n-starts 10
 """
 from __future__ import annotations
 
+import argparse
 import os
 import pickle
 
@@ -16,70 +20,127 @@ import numpy as np
 import pandas as pd
 import pyblp
 
-# Loosen pyblp's collinearity/inversion thresholds so the 2SLS weighting
-# matrix doesn't fall back to a pseudo-inverse and trip the inverse check.
+# Loosen pyblp's inversion thresholds so the 2SLS weighting matrix falls
+# back to a pseudo-inverse rather than aborting when MD+MS is large.
 pyblp.options.collinear_atol = pyblp.options.collinear_rtol = 0.0
 pyblp.options.singular_tol = 1e-14
 pyblp.options.pseudo_inverses = True
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(HERE, "output")
 
-product_data = pd.read_csv(os.path.join(OUTPUT_DIR, "product_data.csv"))
-agent_data = pd.read_csv(os.path.join(OUTPUT_DIR, "agent_data.csv"))
-with open(os.path.join(OUTPUT_DIR, "truth.pkl"), "rb") as fh:
-    truth = pickle.load(fh)
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--output-dir", type=str, default=None,
+                   help="default: output/seed_0/")
+    p.add_argument("--method", type=str, default="2s", choices=["1s", "2s"],
+                   help="GMM method (1-step or 2-step)")
+    p.add_argument("--n-starts", type=int, default=5,
+                   help="number of optimizer starts (start 0 = truth)")
+    p.add_argument("--start-seed", type=int, default=12345,
+                   help="seed for sampling perturbations of the starts")
+    p.add_argument("--gtol", type=float, default=1e-5)
+    return p.parse_args()
 
-print(f"loaded {len(product_data)} product-market rows, {len(agent_data)} agent rows")
 
-# Same three product formulations and same agent formulation used in simulate.py.
-product_formulations = (
-    pyblp.Formulation("1 + prices + x1 + x2 + x3 + x4 + x5"),
-    pyblp.Formulation("1 + prices + x1 + x2 + x3"),
-    pyblp.Formulation("1 + x1 + x2 + w1 + w2"),
-)
-agent_formulation = pyblp.Formulation("0 + income + age + hh_size + education")
+def perturb(rng: np.random.Generator, x: np.ndarray, scale: float = 0.5) -> np.ndarray:
+    """Multiplicative-magnitude perturbation, leaving zeros zero."""
+    mask = x != 0
+    out = x.copy()
+    out[mask] = x[mask] + rng.normal(0.0, scale * np.abs(x[mask]))
+    return out
 
-problem = pyblp.Problem(
-    product_formulations=product_formulations,
-    product_data=product_data,
-    agent_formulation=agent_formulation,
-    agent_data=agent_data,
-    costs_type="linear",
-)
-print(problem)
 
-# Start from the true Sigma, Pi, and price coefficient. With a supply side,
-# pyblp does not concentrate alpha out of the GMM objective, so we must
-# supply an initial value for the price coefficient (NaN for the other
-# beta entries means "concentrate this one out").
-beta_init = np.full(truth["beta"].shape, np.nan)
-beta_init[1] = truth["beta"][1]   # price coefficient
+def main() -> None:
+    args = parse_args()
 
-results = problem.solve(
-    sigma=truth["sigma"],
-    pi=truth["pi"],
-    beta=beta_init,
-    optimization=pyblp.Optimization("bfgs", {"gtol": 1e-5}),
-    method="1s",
-)
-print(results)
+    here = os.path.dirname(os.path.abspath(__file__))
+    output_dir = args.output_dir or os.path.join(here, "output", "seed_0")
 
-print("\n=== Truth vs estimate ===")
-print("\nSigma (lower triangular):")
-print("  truth diag    :", np.diag(truth["sigma"]))
-print("  estimate diag :", np.diag(results.sigma))
+    product_data = pd.read_csv(os.path.join(output_dir, "product_data.csv"))
+    agent_data = pd.read_csv(os.path.join(output_dir, "agent_data.csv"))
+    with open(os.path.join(output_dir, "truth.pkl"), "rb") as fh:
+        truth = pickle.load(fh)
 
-print("\nPi:")
-print("  truth    :\n", truth["pi"])
-print("  estimate :\n", results.pi)
+    print(f"loaded {len(product_data)} product-market rows, "
+          f"{len(agent_data)} agent rows from {output_dir}")
 
-print("\nBeta (concentrated out):")
-print("  truth    :", truth["beta"])
-print("  estimate :", results.beta.flatten())
+    product_formulations = (
+        pyblp.Formulation("1 + prices + x1 + x2 + x3 + x4 + x5"),
+        pyblp.Formulation("1 + prices + x1 + x2 + x3"),
+        pyblp.Formulation("1 + x1 + x2 + w1 + w2"),
+    )
+    agent_formulation = pyblp.Formulation("0 + income + age + hh_size + education")
 
-print("\nGamma (concentrated out):")
-print("  truth    :", truth["gamma"])
-print("  estimate :", results.gamma.flatten())
+    problem = pyblp.Problem(
+        product_formulations=product_formulations,
+        product_data=product_data,
+        agent_formulation=agent_formulation,
+        agent_data=agent_data,
+        costs_type="linear",
+    )
+    print(problem)
 
-print(f"\nGMM objective at estimate : {float(results.objective):.6e}")
+    # Build initial beta vector: NaN entries get concentrated out, alpha
+    # (price coefficient) must be optimized explicitly when supply is present.
+    def beta_init(beta_truth: np.ndarray, alpha_start: float) -> np.ndarray:
+        b = np.full(beta_truth.shape, np.nan)
+        b[1] = alpha_start
+        return b
+
+    optimization = pyblp.Optimization("bfgs", {"gtol": args.gtol})
+    rng = np.random.default_rng(args.start_seed)
+
+    best_results = None
+    best_obj = np.inf
+    for i in range(args.n_starts):
+        if i == 0:
+            sigma0, pi0, alpha0 = truth["sigma"], truth["pi"], truth["beta"][1]
+            tag = "truth"
+        else:
+            sigma0 = perturb(rng, truth["sigma"])
+            pi0 = perturb(rng, truth["pi"])
+            alpha0 = float(perturb(rng, np.array([truth["beta"][1]]))[0])
+            tag = f"perturbed#{i}"
+
+        try:
+            res = problem.solve(
+                sigma=sigma0, pi=pi0,
+                beta=beta_init(truth["beta"], alpha0),
+                optimization=optimization,
+                method=args.method,
+            )
+        except Exception as exc:
+            print(f"  start {i} ({tag}): solve failed — {exc.__class__.__name__}: {exc}")
+            continue
+
+        obj = float(res.objective)
+        print(f"  start {i:>2} ({tag:>13s}): objective = {obj:.6e}")
+        if obj < best_obj:
+            best_obj = obj
+            best_results = res
+
+    if best_results is None:
+        raise RuntimeError("every optimizer start failed")
+
+    print(f"\nbest of {args.n_starts} starts: objective = {best_obj:.6e}")
+    print(best_results)
+
+    print("\n=== Truth vs estimate ===")
+    print("\nSigma (diagonal):")
+    print("  truth    :", np.diag(truth["sigma"]))
+    print("  estimate :", np.diag(best_results.sigma))
+
+    print("\nPi:")
+    print("  truth    :\n", truth["pi"])
+    print("  estimate :\n", best_results.pi)
+
+    print("\nBeta:")
+    print("  truth    :", truth["beta"])
+    print("  estimate :", best_results.beta.flatten())
+
+    print("\nGamma:")
+    print("  truth    :", truth["gamma"])
+    print("  estimate :", best_results.gamma.flatten())
+
+
+if __name__ == "__main__":
+    main()
