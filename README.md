@@ -35,21 +35,29 @@ together with Gandhi–Houde differentiation instruments.
 
 ## Install
 
+The environment is managed with [`uv`](https://docs.astral.sh/uv/). With uv
+installed, one command builds the `.venv/` from `pyproject.toml` + `uv.lock`:
+
 ```
-pip install -r requirements.txt
+uv sync
 ```
+
+(No need to manually create a venv or run `pip install`.)
 
 ## Run
 
+Prefix every Python command with `uv run` so it executes inside the
+project venv:
+
 ```
-python simulate.py                       # default: T=200, J=10, seed=0
-python estimate.py                       # reads output/seed_0/
+uv run python simulate.py                       # default: T=200, J=10, seed=0
+uv run python estimate.py                       # reads output/seed_0/
 
-python simulate.py --seed 1
-python estimate.py --output-dir output/seed_1
+uv run python simulate.py --seed 1
+uv run python estimate.py --output-dir output/seed_1
 
-python simulate.py --T 20 --J 5 --seed 42      # small smoke test
-python estimate.py --output-dir output/seed_42 --n-starts 3
+uv run python simulate.py --T 20 --J 5 --seed 42      # small smoke test
+uv run python estimate.py --output-dir output/seed_42 --n-starts 3
 ```
 
 Each `simulate.py` run writes `product_data.csv`, `agent_data.csv`, and
@@ -61,8 +69,9 @@ its magnitude) and keeps the lowest-objective fit.
 
 - **Pin `numpy < 2.0`.** With numpy 2.0 + scipy 1.13, `scipy.linalg.pinv`
   emits spurious divide-by-zero warnings inside matmul which pyblp
-  treats as 2SLS failures. The `requirements.txt` here pins to
-  `numpy>=1.26,<2.0` and `scipy<1.14`.
+  treats as 2SLS failures. `pyproject.toml` pins
+  `numpy>=1.26,<2.0` and `scipy<1.14`; `uv.lock` records the exact
+  resolved set.
 - **`error_behavior='warn'` is intentional.** Pyblp's default is to
   raise on the first transient numpy overflow inside the ζ-contraction
   even when the fixed point recovers; `simulate.py` switches to `warn`

@@ -1,0 +1,17 @@
+[project]
+name = "rcl-synthetic-data"
+version = "0.1.0"
+description = "Synthetic data generator and round-trip estimator for a BLP random coefficients logit model."
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    "pyblp==1.2.0",
+    "numpy>=1.26,<2.0",
+    "pandas>=2.0",
+    "scipy>=1.11,<1.14",
+    # patsy is an indirect dep of pyblp but doesn't propagate `packaging`.
+    "packaging>=24",
+]
+
+# numpy<2.0 is load-bearing: with numpy 2.x and scipy 1.13, scipy.linalg.pinv
+# emits divide-by-zero warnings inside matmul that pyblp treats as 2SLS
+# failures. scipy<1.14 keeps us on the pre-numpy-2 ABI.
