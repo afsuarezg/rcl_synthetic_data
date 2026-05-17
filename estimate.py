@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
@@ -46,6 +47,22 @@ def perturb(rng: np.random.Generator, x: np.ndarray, scale: float = 0.5) -> np.n
     mask = x != 0
     out = x.copy()
     out[mask] = x[mask] + rng.normal(0.0, scale * np.abs(x[mask]))
+    return out
+
+
+def flatten_params(sigma: np.ndarray, pi: np.ndarray,
+                   beta: np.ndarray, gamma: np.ndarray) -> dict[str, float]:
+    """Map every scalar parameter to a stable label, used for both truth and estimates."""
+    out: dict[str, float] = {}
+    for k in range(sigma.shape[0]):
+        out[f"sigma_{k}_{k}"] = float(sigma[k, k])
+    for k in range(pi.shape[0]):
+        for d in range(pi.shape[1]):
+            out[f"pi_{k}_{d}"] = float(pi[k, d])
+    for k, v in enumerate(np.asarray(beta).flatten()):
+        out[f"beta_{k}"] = float(v)
+    for k, v in enumerate(np.asarray(gamma).flatten()):
+        out[f"gamma_{k}"] = float(v)
     return out
 
 
@@ -89,6 +106,12 @@ def main() -> None:
     optimization = pyblp.Optimization("bfgs", {"gtol": args.gtol})
     rng = np.random.default_rng(args.start_seed)
 
+    estimates_dir = os.path.join(output_dir, "estimates")
+    os.makedirs(estimates_dir, exist_ok=True)
+    truth_params = flatten_params(truth["sigma"], truth["pi"],
+                                  truth["beta"], truth["gamma"])
+
+    records: list[dict] = []
     best_results = None
     best_obj = np.inf
     for i in range(args.n_starts):
@@ -101,6 +124,7 @@ def main() -> None:
             alpha0 = float(perturb(rng, np.array([truth["beta"][1]]))[0])
             tag = f"perturbed#{i}"
 
+        t0 = time.perf_counter()
         try:
             res = problem.solve(
                 sigma=sigma0, pi=pi0,
@@ -109,14 +133,58 @@ def main() -> None:
                 method=args.method,
             )
         except Exception as exc:
+            elapsed = time.perf_counter() - t0
             print(f"  start {i} ({tag}): solve failed — {exc.__class__.__name__}: {exc}")
+            records.append({
+                "start_id": i, "tag": tag, "objective": np.nan,
+                "converged": False, "elapsed_sec": elapsed,
+                "error_class": exc.__class__.__name__, "estimates": None,
+            })
             continue
+        elapsed = time.perf_counter() - t0
+
+        pkl_path = os.path.join(estimates_dir, f"start_{i:02d}.pkl")
+        with open(pkl_path, "wb") as fh:
+            pickle.dump(res, fh)
 
         obj = float(res.objective)
-        print(f"  start {i:>2} ({tag:>13s}): objective = {obj:.6e}")
+        # pyblp ProblemResults exposes optimizer success differently across
+        # versions; fall back to "solve returned" = converged for older builds.
+        converged = bool(getattr(res, "converged", True))
+        print(f"  start {i:>2} ({tag:>13s}): objective = {obj:.6e}  "
+              f"converged={converged}  ({elapsed:.1f}s)")
+        records.append({
+            "start_id": i, "tag": tag, "objective": obj,
+            "converged": converged, "elapsed_sec": elapsed,
+            "error_class": "",
+            "estimates": flatten_params(res.sigma, res.pi, res.beta, res.gamma),
+        })
         if obj < best_obj:
             best_obj = obj
             best_results = res
+
+    rows: list[dict] = []
+    for rec in records:
+        est = rec["estimates"]
+        for pname, tval in truth_params.items():
+            evalue = est[pname] if est is not None else np.nan
+            rows.append({
+                "start_id": rec["start_id"],
+                "tag": rec["tag"],
+                "param_name": pname,
+                "truth": tval,
+                "estimate": evalue,
+                "abs_error": abs(evalue - tval) if est is not None else np.nan,
+                "objective": rec["objective"],
+                "converged": rec["converged"],
+                "elapsed_sec": rec["elapsed_sec"],
+                "error_class": rec["error_class"],
+            })
+    summary_path = os.path.join(output_dir, "estimates_summary.csv")
+    pd.DataFrame(rows).to_csv(summary_path, index=False)
+    n_pkl = sum(1 for r in records if r["estimates"] is not None)
+    print(f"\nwrote {summary_path} ({len(rows)} rows)")
+    print(f"wrote {n_pkl} pickle(s) to {estimates_dir}/")
 
     if best_results is None:
         raise RuntimeError("every optimizer start failed")
