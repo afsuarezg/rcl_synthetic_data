@@ -81,6 +81,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-dir", type=str, default=None,
                    help="default: output/seed_{seed}/")
+    p.add_argument("--iv-mode", choices=["both", "diff_only"], default="both",
+                   help="which estimation variant to plot; reads from "
+                        "output/seed_{seed}/iv_{mode}/")
     return p.parse_args()
 
 
@@ -131,7 +134,7 @@ def _fallback_label(name: str) -> str:
     return name
 
 
-def make_figure(rows: pd.DataFrame, meta: dict, seed: int) -> plt.Figure:
+def make_figure(rows: pd.DataFrame, meta: dict, seed: int, iv_mode: str) -> plt.Figure:
     plt.rcParams.update({
         "font.family": "DejaVu Sans",
         "axes.spines.top": False,
@@ -219,7 +222,7 @@ def make_figure(rows: pd.DataFrame, meta: dict, seed: int) -> plt.Figure:
                       bbox_to_anchor=(0.0, -0.05))
 
     fig.suptitle(
-        f"BLP / RCL parameter recovery — seed_{seed}",
+        f"BLP / RCL parameter recovery — seed_{seed}  (iv-mode: {iv_mode})",
         fontsize=14, y=0.985, x=0.07, ha="left", weight="bold",
     )
     return fig
@@ -228,15 +231,17 @@ def make_figure(rows: pd.DataFrame, meta: dict, seed: int) -> plt.Figure:
 def main() -> None:
     args = parse_args()
     here = os.path.dirname(os.path.abspath(__file__))
-    output_dir = args.output_dir or os.path.join(here, "output", f"seed_{args.seed}")
+    seed_dir = args.output_dir or os.path.join(here, "output", f"seed_{args.seed}")
+    variant_dir = os.path.join(seed_dir, f"iv_{args.iv_mode}")
 
-    rows, meta = load_recovery_table(output_dir)
+    rows, meta = load_recovery_table(variant_dir)
     print(f"plotting {len(rows)} estimated parameters from "
-          f"start #{meta['best_start']} (objective={meta['best_obj']:.4g})")
-    fig = make_figure(rows, meta, seed=args.seed)
+          f"start #{meta['best_start']} (objective={meta['best_obj']:.4g}) "
+          f"[iv-mode={args.iv_mode}]")
+    fig = make_figure(rows, meta, seed=args.seed, iv_mode=args.iv_mode)
 
-    png_path = os.path.join(output_dir, "recovery.png")
-    svg_path = os.path.join(output_dir, "recovery.svg")
+    png_path = os.path.join(variant_dir, "recovery.png")
+    svg_path = os.path.join(variant_dir, "recovery.svg")
     fig.savefig(png_path, dpi=160, bbox_inches="tight")
     fig.savefig(svg_path, bbox_inches="tight")
     print(f"wrote {png_path}")

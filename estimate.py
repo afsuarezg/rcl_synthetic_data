@@ -39,7 +39,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start-seed", type=int, default=12345,
                    help="seed for sampling perturbations of the starts")
     p.add_argument("--gtol", type=float, default=1e-5)
+    p.add_argument("--iv-mode", choices=["both", "diff_only"], default="both",
+                   help="which demand/supply instrument blocks to include in GMM. "
+                        "'both' = BLP rivals-sum + Gandhi-Houde differentiation; "
+                        "'diff_only' = differentiation only.")
     return p.parse_args()
+
+
+def apply_iv_mode(product_data: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Filter and renumber instrument columns in product_data per `mode`.
+
+    simulate.py writes BLP rivals-sum instruments first (demand 0..9, supply 0..7)
+    followed by Gandhi-Houde differentiation instruments (demand 10..19, supply
+    8..15). pyblp requires demand_instruments / supply_instruments to be
+    contiguously numbered from 0 (utilities/basics.py: extract_matrix), so when
+    we drop the BLP block we must also renumber the surviving diff block.
+    """
+    if mode == "both":
+        return product_data
+
+    if mode == "diff_only":
+        out = product_data.copy()
+        out = out.drop(columns=[f"demand_instruments{k}" for k in range(10)])
+        out = out.drop(columns=[f"supply_instruments{k}" for k in range(8)])
+        out = out.rename(columns={f"demand_instruments{10 + k}": f"demand_instruments{k}"
+                                  for k in range(10)})
+        out = out.rename(columns={f"supply_instruments{8 + k}": f"supply_instruments{k}"
+                                  for k in range(8)})
+        return out
+
+    raise ValueError(f"unknown iv-mode {mode!r}")
 
 
 def perturb(rng: np.random.Generator, x: np.ndarray, scale: float = 0.5) -> np.ndarray:
@@ -77,8 +106,15 @@ def main() -> None:
     with open(os.path.join(output_dir, "truth.pkl"), "rb") as fh:
         truth = pickle.load(fh)
 
+    product_data = apply_iv_mode(product_data, args.iv_mode)
+    n_demand_iv = sum(c.startswith("demand_instruments") for c in product_data.columns)
+    n_supply_iv = sum(c.startswith("supply_instruments") for c in product_data.columns)
     print(f"loaded {len(product_data)} product-market rows, "
           f"{len(agent_data)} agent rows from {output_dir}")
+    print(f"iv-mode={args.iv_mode}: {n_demand_iv} demand IVs, {n_supply_iv} supply IVs")
+
+    variant_dir = os.path.join(output_dir, f"iv_{args.iv_mode}")
+    os.makedirs(variant_dir, exist_ok=True)
 
     product_formulations = (
         pyblp.Formulation("1 + prices + x1 + x2 + x3 + x4 + x5"),
@@ -106,7 +142,7 @@ def main() -> None:
     optimization = pyblp.Optimization("bfgs", {"gtol": args.gtol})
     rng = np.random.default_rng(args.start_seed)
 
-    estimates_dir = os.path.join(output_dir, "estimates")
+    estimates_dir = os.path.join(variant_dir, "estimates")
     os.makedirs(estimates_dir, exist_ok=True)
     truth_params = flatten_params(truth["sigma"], truth["pi"],
                                   truth["beta"], truth["gamma"])
@@ -180,7 +216,7 @@ def main() -> None:
                 "elapsed_sec": rec["elapsed_sec"],
                 "error_class": rec["error_class"],
             })
-    summary_path = os.path.join(output_dir, "estimates_summary.csv")
+    summary_path = os.path.join(variant_dir, "estimates_summary.csv")
     pd.DataFrame(rows).to_csv(summary_path, index=False)
     n_pkl = sum(1 for r in records if r["estimates"] is not None)
     print(f"\nwrote {summary_path} ({len(rows)} rows)")
