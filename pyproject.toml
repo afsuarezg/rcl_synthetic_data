@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.26,<2.0",
     "pandas>=2.0",
     "scipy>=1.11,<1.14",
+    "matplotlib>=3.7",
     # patsy is an indirect dep of pyblp but doesn't propagate `packaging`.
     "packaging>=24",
 ]
