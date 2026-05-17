@@ -13,6 +13,11 @@ dependencies = [
     "packaging>=24",
 ]
 
+[dependency-groups]
+dev = [
+    "ipykernel>=6.31.0",
+]
+
 # numpy<2.0 is load-bearing: with numpy 2.x and scipy 1.13, scipy.linalg.pinv
 # emits divide-by-zero warnings inside matmul that pyblp treats as 2SLS
 # failures. scipy<1.14 keeps us on the pre-numpy-2 ABI.
