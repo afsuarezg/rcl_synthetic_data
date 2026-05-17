@@ -160,6 +160,25 @@ def main() -> None:
             alpha0 = float(perturb(rng, np.array([truth["beta"][1]]))[0])
             tag = f"perturbed#{i}"
 
+        pkl_path = os.path.join(estimates_dir, f"start_{i:02d}.pkl")
+        if os.path.exists(pkl_path):
+            with open(pkl_path, "rb") as fh:
+                res = pickle.load(fh)
+            obj = float(res.objective)
+            converged = bool(getattr(res, "converged", True))
+            records.append({
+                "start_id": i, "tag": tag, "objective": obj,
+                "converged": converged, "elapsed_sec": float("nan"),
+                "error_class": "",
+                "estimates": flatten_params(res.sigma, res.pi, res.beta, res.gamma),
+            })
+            if obj < best_obj:
+                best_obj = obj
+                best_results = res
+            print(f"  start {i:>2} ({tag:>13s}): resumed from disk  "
+                  f"objective = {obj:.6e}  converged={converged}")
+            continue
+
         t0 = time.perf_counter()
         try:
             res = problem.solve(
@@ -179,7 +198,6 @@ def main() -> None:
             continue
         elapsed = time.perf_counter() - t0
 
-        pkl_path = os.path.join(estimates_dir, f"start_{i:02d}.pkl")
         with open(pkl_path, "wb") as fh:
             pickle.dump(res, fh)
 
