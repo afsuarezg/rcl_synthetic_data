@@ -133,6 +133,49 @@ The whole array typically finishes within the wall time of the slowest single
 spec (≈ 25–30 min on average Sherlock hardware) once the scheduler has
 allocated all tasks.
 
+## 6b. Alternative: single-job submission (`slurm/main_job.sh`)
+
+If you prefer the more traditional single-job pattern used elsewhere on
+Sherlock (mirroring `rcl-market-assessment/slurm/example_main_job.sh`),
+submit `slurm/main_job.sh` instead of the array. It runs all 60 specs
+**serially** inside one job — simpler to reason about, but slower wall time
+(~5 h serial vs ~30 min parallel for the array).
+
+```bash
+# 1. edit REPO_URL at the top of slurm/main_job.sh
+# 2. cd into a writeable directory on Sherlock (so slurm/logs/ can be made)
+sbatch slurm/main_job.sh
+```
+
+Notable differences from the array path above:
+
+| | array (`run_specs.sbatch`) | single job (`main_job.sh`) |
+|---|---|---|
+| Submission | `sbatch` + chained `--dependency=afterok` | one `sbatch` |
+| Parallelism | 60 concurrent tasks | serial in one task |
+| Wallclock | ~30 min | ~5 h |
+| Repo location | `$HOME/rcl_synthetic_data` (you cloned it) | `$SCRATCH/rcl_synthetic_data` (the script clones it for you) |
+| Headers | `--cpus-per-task=4`, `--mem=8G`, `--time=02:00:00` per task | `-c 4`, `--mem=16GB`, `--time=24:00:00` for the whole sweep |
+| Logs | `slurm/logs/spec_${JOBID}_<idx>.{out,err}` | `slurm/logs/blp_specs.${JOBID}.{out,err}` |
+
+`slurm/main_job.sh` is also fully resume-friendly: every spec it would
+otherwise solve checks for an existing `estimates_summary.csv` first and
+skips if present, and inside each spec, `estimate.py` skips any per-start
+pickle that already exists. So re-submitting the same job after a partial
+run just fills in whatever is missing.
+
+Outputs land under `$SCRATCH/rcl_synthetic_data/output/seed_0/iv_both/specs/`
+(the **single-job path uses `$SCRATCH`**, not `$HOME`). Pull them back with:
+
+```bash
+# from your laptop — adjust the source path for $SCRATCH:
+rsync -avz YOURSUNETID@login.sherlock.stanford.edu:'/scratch/users/YOURSUNETID/rcl_synthetic_data/output/seed_0/iv_both/specs/' \
+           "/Users/andres/Documents/Mergers RCL/rcl_synthetic_data/output/seed_0/iv_both/specs/"
+```
+
+(Use `echo $SCRATCH` on Sherlock to see your exact `$SCRATCH` path — it's
+typically `/scratch/users/<sunetid>`.)
+
 ## 7. Monitor
 
 ```bash
