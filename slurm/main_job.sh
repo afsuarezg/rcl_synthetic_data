@@ -88,11 +88,12 @@ PROJECT_DIR="${PROJECT_DIR:-$SCRATCH/rcl_synthetic_data}"
 # -----------------------------------------------------------------------------
 if [ ! -d "$PROJECT_DIR/.git" ]; then
     git clone "$REPO_URL" "$PROJECT_DIR"
+    cd "$PROJECT_DIR"
 else
-    git -C "$PROJECT_DIR" fetch --quiet origin
-    git -C "$PROJECT_DIR" reset --hard origin/HEAD
+    cd "$PROJECT_DIR"
+    git fetch --quiet origin
+    git reset --hard origin/HEAD
 fi
-cd "$PROJECT_DIR"
 
 # -----------------------------------------------------------------------------
 # Python environment, via uv (https://astral.sh/uv).
