@@ -11,6 +11,7 @@ dependencies = [
     "matplotlib>=3.7",
     # patsy is an indirect dep of pyblp but doesn't propagate `packaging`.
     "packaging>=24",
+    "seaborn>=0.13.2",
 ]
 
 [dependency-groups]
