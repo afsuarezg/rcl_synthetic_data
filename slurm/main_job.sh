@@ -68,6 +68,20 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-https://github.com/afsuarezg/rcl_synthetic_data.git}"
 PROJECT_DIR="${PROJECT_DIR:-$SCRATCH/rcl_synthetic_data}"
 
+# ADD_STARTS — how many *new* optimizer starts to add per spec on this
+# submission. The first run with no existing starts produces ADD_STARTS starts
+# per spec (default 5, matching the historical behavior). Every subsequent
+# submission counts the existing `start_*.pkl` files and adds ADD_STARTS more
+# on top, so resubmitting the job accumulates robustness against local minima
+# rather than redoing work. Override on the sbatch command line:
+#
+#     sbatch --export=ADD_STARTS=10 slurm/main_job.sh
+#
+# Wallclock cost scales roughly linearly: ADD_STARTS=5 is ~5 h serial, the
+# same as a from-scratch 5-start run. The 46 h walltime below has headroom
+# for ~9 increments before you need to bump --time.
+ADD_STARTS="${ADD_STARTS:-5}"
+
 # -----------------------------------------------------------------------------
 # Code refresh (clone-or-update).
 #
@@ -149,23 +163,51 @@ fi
 #     - X2 specifications (which non-price product characteristics enter
 #       the model as random coefficients), and
 #     - demographic-interaction sets
-# yielding 60 BLP model variants. For each variant it:
-#     - estimates the model 5 times from different random starting values
-#       (`--n-starts 5`), keeping the best fit,
-#     - uses both instrument sets simultaneously (`--iv-mode both`,
-#       i.e., differentiation IVs *and* BLP-style IVs), and
-#     - writes per-spec results to
-#         output/seed_0/iv_both/specs/spec_<label>/estimates_summary.csv
+# yielding 60 BLP model variants. For each variant it estimates the model
+# from multiple random starting values (keeping the best fit) using both
+# instrument sets simultaneously (`--iv-mode both`, i.e., differentiation
+# IVs *and* BLP-style IVs), and writes per-spec results to
+#     output/seed_0/iv_both/specs/spec_<label>/estimates_summary.csv
 #
-# The script is resume-friendly: any spec whose `estimates_summary.csv` is
-# already on disk is skipped, so a re-submission picks up where a previous
-# run left off (provided $PROJECT_DIR survived — see the note about `rm -rf`).
+# Accumulating starts across re-submissions:
+#   Each submission adds ADD_STARTS more optimizer starts to every spec.
+#   We count the existing `start_*.pkl` files (taking the max across specs
+#   so all reach the same target) and ask run_specs.py for
+#   `existing + ADD_STARTS` total starts. Then we delete the per-spec
+#   `estimates_summary.csv` files: that's the *only* thing standing between
+#   us and the per-start resume inside estimate.py, which loads any
+#   `start_<NN>.pkl` already on disk and only runs the new ones. The
+#   summary CSVs are regenerated from the (old + new) pickles at the end
+#   of each spec, so deleting them costs nothing.
+#
+#   First-time runs: EXISTING=0, so N_STARTS=ADD_STARTS — identical to the
+#   historical 5-start behavior when ADD_STARTS is left at its default.
 #
 # After all specs finish, run_specs.py aggregates them into rollup CSVs
 # next to the per-spec subdirectories.
 # -----------------------------------------------------------------------------
-echo "[$(date -Iseconds)] running 60-spec sweep (iv_both, 5 starts each)"
-uv run python run_specs.py --seed 0 --iv-mode both --n-starts 5
+SPECS_ROOT="output/seed_0/iv_both/specs"
+
+if [ -d "$SPECS_ROOT" ]; then
+    # Group pkls by their containing spec_<label>/ dir (everything before
+    # /estimates/), count per group, take the max so every spec is brought
+    # up to the same N_STARTS this run.
+    EXISTING=$(find "$SPECS_ROOT" -path '*/estimates/start_*.pkl' \
+               | awk -F'/estimates/' '{print $1}' | sort | uniq -c \
+               | awk '{print $1}' | sort -n | tail -1)
+    EXISTING="${EXISTING:-0}"
+else
+    EXISTING=0
+fi
+N_STARTS=$(( EXISTING + ADD_STARTS ))
+
+# Clear per-spec summaries so run_specs.py's per-spec skip doesn't fire.
+# Also clear the rollups so they rebuild cleanly from the new summaries.
+find "$SPECS_ROOT" -name estimates_summary.csv -delete 2>/dev/null || true
+rm -f "$SPECS_ROOT/specs_summary_long.csv" "$SPECS_ROOT/specs_summary_best.csv"
+
+echo "[$(date -Iseconds)] sweep: existing=$EXISTING add=$ADD_STARTS -> n_starts=$N_STARTS"
+uv run python run_specs.py --seed 0 --iv-mode both --n-starts "$N_STARTS"
 
 # -----------------------------------------------------------------------------
 # STEP 3 / 3 — Visualize recovery error.
