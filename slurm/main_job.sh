@@ -113,6 +113,13 @@ if ! command -v uv >/dev/null 2>&1; then
     # shellcheck disable=SC1091
     source "$HOME/.local/bin/env"
 fi
+
+# Sherlock's system /usr/bin/gcc is 4.8.5, which predates C++17. Load a
+# modern GCC via Lmod so that any pip/uv source-build fallbacks (notably
+# matplotlib's contourpy) can compile. If none of these versions exist on
+# the host, run `ml avail gcc` to find a current one and edit this line.
+ml gcc/12.4.0 2>/dev/null || ml gcc/10.1.0 2>/dev/null || ml gcc
+
 uv sync --quiet      # create/refresh .venv/ to match uv.lock; no-op if up to date
 
 # -----------------------------------------------------------------------------
