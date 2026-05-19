@@ -174,3 +174,67 @@ def starts_table(df: pd.DataFrame) -> pd.DataFrame:
         ]
         .reset_index(drop=True)
     )
+
+
+# ---------------------------------------------------------------------------
+# Elasticity / post-estimation loaders (written by compute_elasticities.py)
+# ---------------------------------------------------------------------------
+
+def has_elasticities(specs_dir: Path) -> bool:
+    """True iff elasticities_detail.csv and post_estimation_summary.csv exist."""
+    return (specs_dir / 'elasticities_detail.csv').exists() \
+        and (specs_dir / 'post_estimation_summary.csv').exists()
+
+
+def load_elasticities(specs_dir: Path) -> pd.DataFrame:
+    """Load elasticities_detail.csv with numeric coercion."""
+    df = pd.read_csv(specs_dir / 'elasticities_detail.csv')
+    df['converged'] = df['converged'].astype(str).str.lower() == 'true'
+    df['is_truth_start'] = df['is_truth_start'].astype(str).str.lower() == 'true'
+    df['own_price'] = df['own_price'].astype(str).str.lower() == 'true'
+    df['same_firm'] = df['same_firm'].astype(int) == 1 \
+        if df['same_firm'].dtype == 'O' else df['same_firm'].astype(bool)
+    for c in ('elasticity',):
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    for c in ('product_j', 'product_k', 'firm_j', 'firm_k', 'start_id'):
+        df[c] = df[c].astype(int)
+    return df
+
+
+def load_post_estimation(specs_dir: Path) -> pd.DataFrame:
+    """Load post_estimation_summary.csv (one row per spec, best perturbed start)."""
+    df = pd.read_csv(specs_dir / 'post_estimation_summary.csv')
+    for c in ('mean_own_elas', 'mean_outside_div', 'mean_markup', 'mean_hhi',
+              'mean_delta_markup', 'mean_delta_hhi', 'mean_delta_cs'):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df
+
+
+def has_truth_elasticities(seed_dir: Path) -> bool:
+    return (seed_dir / 'truth_elasticities.csv').exists()
+
+
+def load_truth_elasticities(seed_dir: Path) -> pd.DataFrame:
+    """Load truth_elasticities.csv for the given seed_dir."""
+    df = pd.read_csv(seed_dir / 'truth_elasticities.csv')
+    df['own_price'] = df['own_price'].astype(str).str.lower() == 'true'
+    df['same_firm'] = df['same_firm'].astype(int) == 1 \
+        if df['same_firm'].dtype == 'O' else df['same_firm'].astype(bool)
+    df['elasticity'] = pd.to_numeric(df['elasticity'], errors='coerce')
+    for c in ('product_j', 'product_k', 'firm_j', 'firm_k'):
+        df[c] = df[c].astype(int)
+    return df
+
+
+def load_truth_post_estimation(seed_dir: Path) -> pd.DataFrame:
+    df = pd.read_csv(seed_dir / 'truth_post_estimation.csv')
+    return df
+
+
+def elasticities_best_per_spec(elas_df: pd.DataFrame, best_map: dict[str, int]
+                               ) -> pd.DataFrame:
+    """Filter elas_df to just the best-start row per spec."""
+    frames = [elas_df[(elas_df.spec_label == s) & (elas_df.start_id == sid)]
+              for s, sid in best_map.items()]
+    return pd.concat(frames, ignore_index=True) if frames else elas_df.iloc[:0]
