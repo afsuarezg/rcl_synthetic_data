@@ -485,6 +485,447 @@ def plot_best_vs_truth_start(df: pd.DataFrame, out_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Elasticity plots (analyses 20-35)
+# ---------------------------------------------------------------------------
+
+def plot_elasticity_own_summary(elas, df_long, truth_elas, out_dir):
+    """20. Boxplot of own-price elasticities per spec, sorted by GMM objective."""
+    best = sio.best_per_spec(df_long)
+    starts = sio.starts_table(df_long)
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)
+                   & elas.own_price]
+        if sub.empty:
+            continue
+        obj = float(starts[(starts.spec_label == spec)
+                           & (starts.start_id == sid)].objective.iloc[0])
+        for _, r in sub.iterrows():
+            rows.append({'spec': spec, 'obj': obj,
+                         'elasticity': float(r.elasticity)})
+    d = pd.DataFrame(rows)
+    order = (d[['spec', 'obj']].drop_duplicates()
+             .sort_values('obj').spec.tolist())
+
+    fig, ax = plt.subplots(figsize=(8, _fig_height(len(order))))
+    sns.boxplot(data=d, y='spec', x='elasticity', order=order, orient='h',
+                color=PALETTE[0], ax=ax, fliersize=2, linewidth=0.8)
+    if truth_elas is not None:
+        tval = float(truth_elas[truth_elas.own_price].elasticity.mean())
+        ax.axvline(tval, color='black', linestyle='--', linewidth=1,
+                   label=f'truth mean = {tval:.3f}')
+        ax.legend(loc='lower right')
+    ax.set_yticks(np.arange(len(order)))
+    ax.set_yticklabels([_abbrev(s) for s in order], fontsize=7)
+    ax.set_xlabel('own-price elasticity')
+    ax.set_ylabel('')
+    ax.set_title('20. Own-price elasticity distribution per spec '
+                 '(sorted by GMM objective)')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '20_elasticity_own_summary.png')
+
+
+def plot_elasticity_multistart_stability(elas, df_long, out_dir):
+    """21. Dotplot: per-product own-elasticity across perturbed starts, per spec."""
+    sub = elas[~elas.is_truth_start & elas.own_price].copy()
+    # rank specs by max spread
+    spread = (sub.groupby(['spec_label', 'product_j']).elasticity
+              .agg(lambda s: s.max() - s.min()))
+    by_spec = spread.groupby(level=0).max().sort_values(ascending=False)
+    # take top 10 most-unstable specs
+    keep = by_spec.head(10).index.tolist()
+    sub = sub[sub.spec_label.isin(keep)]
+
+    fig, ax = plt.subplots(figsize=(9, _fig_height(len(keep), per_row=0.5,
+                                                   min_h=5, max_h=14)))
+    spec_order = keep
+    sub['spec_order'] = sub.spec_label.map({s: i for i, s in enumerate(spec_order)})
+    sns.stripplot(data=sub, y='spec_order', x='elasticity', hue='product_j',
+                  jitter=0.18, dodge=True, palette='tab10', size=4, ax=ax)
+    ax.set_yticks(np.arange(len(spec_order)))
+    ax.set_yticklabels([_abbrev(s) for s in spec_order], fontsize=8)
+    ax.set_xlabel('own-price elasticity')
+    ax.set_ylabel('')
+    ax.set_title('21. Own-price elasticity stability across perturbed starts '
+                 '(top 10 most unstable specs)')
+    ax.legend(title='product', loc='center left', bbox_to_anchor=(1.02, 0.5),
+              fontsize=7, ncol=2)
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '21_elasticity_multistart_stability.png')
+
+
+def plot_elasticity_top_substitutes(elas, df_long, out_dir):
+    """22. Cross-elasticity heatmap (10x10) for the rank-1 spec, firm blocks marked."""
+    starts = sio.starts_table(df_long)
+    best = sio.best_per_spec(df_long)
+    obj_pairs = sorted(
+        [(spec, float(starts[(starts.spec_label == spec)
+                             & (starts.start_id == sid)].objective.iloc[0]))
+         for spec, sid in best.items()], key=lambda x: x[1])
+    rank1_spec = obj_pairs[0][0]
+    rank1_sid = best[rank1_spec]
+    sub = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)]
+    pivot = sub.pivot(index='product_j', columns='product_k', values='elasticity')
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    vmax = float(np.abs(pivot.values).max())
+    sns.heatmap(pivot, cmap='RdBu_r', center=0, vmin=-vmax, vmax=vmax,
+                annot=True, fmt='.3f', annot_kws={'size': 7},
+                cbar_kws={'label': 'elasticity'}, ax=ax)
+    # firm-block boundaries (FIRM_PATTERN = 1,1,2,2,3,3,4,4,5,5 -> lines at 2,4,6,8)
+    for k in (2, 4, 6, 8):
+        ax.axvline(k, color='black', linewidth=0.8)
+        ax.axhline(k, color='black', linewidth=0.8)
+    ax.set_xlabel('product k')
+    ax.set_ylabel('product j')
+    ax.set_title(f'22. Cross-elasticity matrix (rank-1 spec)\n{_abbrev(rank1_spec)}')
+    _save(fig, out_dir, '22_elasticity_top_substitutes.png')
+
+
+def plot_elasticity_asymmetry(elas, df_long, out_dir):
+    """23. Asymmetry |e_jk - e_kj| scatter for the rank-1 spec."""
+    starts = sio.starts_table(df_long)
+    best = sio.best_per_spec(df_long)
+    rank1_spec = sorted(
+        [(spec, float(starts[(starts.spec_label == spec)
+                             & (starts.start_id == sid)].objective.iloc[0]))
+         for spec, sid in best.items()], key=lambda x: x[1])[0][0]
+    rank1_sid = best[rank1_spec]
+    sub = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)
+               & ~elas.own_price]
+    lookup = {(int(r.product_j), int(r.product_k)): float(r.elasticity)
+              for _, r in sub.iterrows()}
+    pairs = []
+    for (j, k), v in lookup.items():
+        if j < k and (k, j) in lookup:
+            pairs.append((j, k, v, lookup[(k, j)]))
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    xs = [p[2] for p in pairs]
+    ys = [p[3] for p in pairs]
+    ax.scatter(xs, ys, s=30, color=PALETTE[0], alpha=0.85, edgecolor='white')
+    lo = min(min(xs), min(ys)) * 0.95
+    hi = max(max(xs), max(ys)) * 1.05
+    ax.plot([lo, hi], [lo, hi], color=COL_REF, linestyle='--', linewidth=1)
+    ax.set_xlabel('e_jk')
+    ax.set_ylabel('e_kj')
+    ax.set_title(f'23. Cross-elasticity asymmetry (rank-1 spec)\n{_abbrev(rank1_spec)}')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '23_elasticity_asymmetry.png')
+
+
+def plot_elasticity_spec_spearman(elas, df_long, out_dir):
+    """24. Heatmap of pairwise Spearman correlations of own-elas across specs."""
+    best = sio.best_per_spec(df_long)
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)
+                   & elas.own_price]
+        for _, r in sub.iterrows():
+            rows.append((spec, int(r.product_j), float(r.elasticity)))
+    d = pd.DataFrame(rows, columns=['spec', 'product', 'elas'])
+    pivot = d.pivot(index='product', columns='spec', values='elas')
+    rho = pivot.rank().corr()
+    order = rho.mean().sort_values(ascending=False).index.tolist()
+    rho = rho.loc[order, order]
+
+    fig, ax = plt.subplots(figsize=(max(8, 0.18 * len(order)),
+                                    max(7, 0.18 * len(order))))
+    sns.heatmap(rho, cmap='RdBu_r', center=0, vmin=-1, vmax=1,
+                cbar_kws={'label': 'Spearman rho'}, ax=ax,
+                xticklabels=[_abbrev(s) for s in order],
+                yticklabels=[_abbrev(s) for s in order])
+    ax.tick_params(axis='x', labelsize=6, rotation=90)
+    ax.tick_params(axis='y', labelsize=6)
+    ax.set_title('24. Spearman correlation of own-price elasticities across specs')
+    _save(fig, out_dir, '24_elasticity_spec_spearman.png')
+
+
+def plot_elasticity_firm_substitution(elas, df_long, out_dir):
+    """25. 5x5 firm-substitution heatmap for the rank-1 spec."""
+    starts = sio.starts_table(df_long)
+    best = sio.best_per_spec(df_long)
+    rank1_spec = sorted(
+        [(spec, float(starts[(starts.spec_label == spec)
+                             & (starts.start_id == sid)].objective.iloc[0]))
+         for spec, sid in best.items()], key=lambda x: x[1])[0][0]
+    rank1_sid = best[rank1_spec]
+    sub = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)
+               & ~elas.own_price]
+    pivot = sub.groupby(['firm_j', 'firm_k']).elasticity.mean().unstack()
+
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    vmax = float(np.abs(pivot.values).max())
+    sns.heatmap(pivot, cmap='RdBu_r', center=0, vmin=-vmax, vmax=vmax,
+                annot=True, fmt='.3f', ax=ax,
+                cbar_kws={'label': 'mean cross-elasticity'})
+    ax.set_xlabel('firm k')
+    ax.set_ylabel('firm j')
+    ax.set_title(f'25. Within/between-firm mean cross-elasticity\n'
+                 f'rank-1 spec: {_abbrev(rank1_spec)}')
+    _save(fig, out_dir, '25_elasticity_firm_substitution.png')
+
+
+def plot_elasticity_own_cross_spec_stability(elas, df_long, out_dir):
+    """26. Per-product own-elas across specs (stripplot)."""
+    best = sio.best_per_spec(df_long)
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)
+                   & elas.own_price]
+        for _, r in sub.iterrows():
+            rows.append({'spec': spec, 'product': int(r.product_j),
+                         'firm': int(r.firm_j), 'elas': float(r.elasticity)})
+    d = pd.DataFrame(rows)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.stripplot(data=d, x='product', y='elas', hue='firm',
+                  palette='tab10', jitter=0.2, size=4, ax=ax)
+    ax.set_xlabel('product')
+    ax.set_ylabel('own-price elasticity (best perturbed start)')
+    ax.set_title('26. Own-price elasticity per product across specs')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '26_elasticity_own_cross_spec_stability.png')
+
+
+def plot_elasticity_cross_cross_spec_stability(elas, df_long, out_dir, k=5):
+    """27. Top-k substitute pair elasticities across specs (stripplot)."""
+    starts = sio.starts_table(df_long)
+    best = sio.best_per_spec(df_long)
+    rank1_spec = sorted(
+        [(spec, float(starts[(starts.spec_label == spec)
+                             & (starts.start_id == sid)].objective.iloc[0]))
+         for spec, sid in best.items()], key=lambda x: x[1])[0][0]
+    rank1_sid = best[rank1_spec]
+    rank1 = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)
+                 & ~elas.own_price]
+    top = rank1.sort_values('elasticity', ascending=False).head(k)
+    pairs = list(zip(top.product_j.astype(int), top.product_k.astype(int)))
+
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)]
+        for (j, k_) in pairs:
+            r = sub[(sub.product_j == j) & (sub.product_k == k_)]
+            if not r.empty:
+                rows.append({'pair': f'({j},{k_})', 'spec': spec,
+                             'elas': float(r.elasticity.iloc[0])})
+    d = pd.DataFrame(rows)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    sns.stripplot(data=d, x='pair', y='elas', color=PALETTE[0],
+                  jitter=0.18, size=4, ax=ax)
+    ax.set_xlabel('(j,k) pair')
+    ax.set_ylabel('cross-price elasticity')
+    ax.set_title(f'27. Top-{k} substitute pair elasticities across specs')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '27_elasticity_cross_cross_spec_stability.png')
+
+
+def plot_elasticity_pairwise_mad(elas, df_long, out_dir):
+    """28. 60x60 MAD heatmap of own-price elasticities between specs."""
+    best = sio.best_per_spec(df_long)
+    own_by_spec = {}
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)
+                   & elas.own_price].sort_values('product_j')
+        own_by_spec[spec] = sub.elasticity.to_numpy()
+    specs = list(own_by_spec.keys())
+    n = len(specs)
+    mat = np.zeros((n, n))
+    for i, si in enumerate(specs):
+        for j, sj in enumerate(specs):
+            mat[i, j] = np.mean(np.abs(own_by_spec[si] - own_by_spec[sj]))
+    mean_mad = (mat.sum(axis=1) - np.diag(mat)) / (n - 1)
+    order = np.argsort(mean_mad)
+    mat_ord = mat[np.ix_(order, order)]
+    labels = [_abbrev(specs[i]) for i in order]
+
+    fig, ax = plt.subplots(figsize=(max(8, 0.18 * n), max(7, 0.18 * n)))
+    sns.heatmap(mat_ord, cmap='magma_r',
+                cbar_kws={'label': 'mean |e_jj - e_jj_other|'},
+                xticklabels=labels, yticklabels=labels, ax=ax)
+    ax.tick_params(axis='x', labelsize=6, rotation=90)
+    ax.tick_params(axis='y', labelsize=6)
+    ax.set_title('28. Pairwise MAD of own-price elasticities between specs')
+    _save(fig, out_dir, '28_elasticity_pairwise_mad.png')
+
+
+def plot_elasticity_pair_across_sims(elas, df_long, truth_elas, out_dir):
+    """30. 4-panel: e_jj, e_kk, e_jk, e_kj across perturbed starts of best-mean-obj spec."""
+    starts = sio.starts_table(df_long)
+    pert = starts[~starts.is_truth_start]
+    spec = pert.groupby('spec_label').objective.mean().sort_values().index[0]
+    j, k = 0, 1
+    sub = elas[(elas.spec_label == spec) & ~elas.is_truth_start]
+
+    fig, axes = plt.subplots(2, 2, figsize=(9, 6), sharex=True)
+    quads = [('e_jj', j, j), ('e_kk', k, k), ('e_jk', j, k), ('e_kj', k, j)]
+    for ax, (name, jj, kk) in zip(axes.flat, quads):
+        vals = []
+        for sid, ssub in sub.groupby('start_id'):
+            r = ssub[(ssub.product_j == jj) & (ssub.product_k == kk)]
+            if not r.empty:
+                vals.append((int(sid), float(r.elasticity.iloc[0])))
+        if vals:
+            xs, ys = zip(*sorted(vals))
+            ax.scatter(xs, ys, s=40, color=PALETTE[0], zorder=3,
+                       edgecolor='white')
+        if truth_elas is not None:
+            r = truth_elas[(truth_elas.product_j == jj)
+                           & (truth_elas.product_k == kk)]
+            if not r.empty:
+                ax.axhline(float(r.elasticity.iloc[0]),
+                           color='black', linestyle='--', linewidth=1,
+                           label=f'truth = {float(r.elasticity.iloc[0]):.3f}')
+                ax.legend(loc='lower right', fontsize=7)
+        ax.set_title(f'{name}  (j={jj}, k={kk})')
+        ax.set_xlabel('start_id')
+        ax.set_ylabel('elasticity')
+        sns.despine(ax=ax)
+    fig.suptitle(f'30. Pair (j={j}, k={k}) across perturbed starts '
+                 f'(best-mean-obj spec: {_abbrev(spec)})')
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    _save(fig, out_dir, '30_elasticity_pair_across_sims.png')
+
+
+def plot_elasticity_pair_best_sim_across_specs(elas, df_long, truth_elas, out_dir):
+    """31. 4-panel: same (j,k) pair across specs, best-start each, ranked by obj."""
+    j, k = 0, 1
+    best = sio.best_per_spec(df_long)
+    starts = sio.starts_table(df_long)
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)]
+        obj = float(starts[(starts.spec_label == spec)
+                           & (starts.start_id == sid)].objective.iloc[0])
+        def _e(jj, kk):
+            r = sub[(sub.product_j == jj) & (sub.product_k == kk)]
+            return float(r.elasticity.iloc[0]) if not r.empty else float('nan')
+        rows.append({'spec': spec, 'obj': obj,
+                     'e_jj': _e(j, j), 'e_kk': _e(k, k),
+                     'e_jk': _e(j, k), 'e_kj': _e(k, j)})
+    d = pd.DataFrame(rows).sort_values('obj').reset_index(drop=True)
+
+    fig, axes = plt.subplots(2, 2, figsize=(9, 6), sharex=True)
+    for ax, (name, jj, kk) in zip(axes.flat,
+                                  [('e_jj', j, j), ('e_kk', k, k),
+                                   ('e_jk', j, k), ('e_kj', k, j)]):
+        ax.scatter(d.obj, d[name], s=30, color=PALETTE[0],
+                   edgecolor='white')
+        if truth_elas is not None:
+            r = truth_elas[(truth_elas.product_j == jj)
+                           & (truth_elas.product_k == kk)]
+            if not r.empty:
+                ax.axhline(float(r.elasticity.iloc[0]),
+                           color='black', linestyle='--', linewidth=1,
+                           label=f'truth = {float(r.elasticity.iloc[0]):.3f}')
+                ax.legend(loc='lower right', fontsize=7)
+        ax.set_title(f'{name}  (j={jj}, k={kk})')
+        ax.set_xlabel('GMM objective')
+        ax.set_ylabel('elasticity')
+        sns.despine(ax=ax)
+    fig.suptitle(f'31. Pair (j={j}, k={k}) across specs (best perturbed start each)')
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    _save(fig, out_dir, '31_elasticity_pair_best_sim_across_specs.png')
+
+
+def plot_elasticity_recovery_own(elas, df_long, truth_elas, out_dir):
+    """33. Per-spec own-elasticity RMSE vs truth (horizontal bar)."""
+    best = sio.best_per_spec(df_long)
+    truth_own = truth_elas[truth_elas.own_price].set_index('product_j')['elasticity']
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)
+                   & elas.own_price].set_index('product_j')['elasticity']
+        common = sub.index.intersection(truth_own.index)
+        err = (sub.loc[common] - truth_own.loc[common]).to_numpy()
+        rows.append({'spec': spec,
+                     'rmse': float(np.sqrt(np.mean(err ** 2))),
+                     'bias': float(np.mean(err))})
+    d = pd.DataFrame(rows).sort_values('rmse')
+
+    fig, ax = plt.subplots(figsize=(8, _fig_height(len(d))))
+    y = np.arange(len(d))
+    colors = [COL_NEAR if b >= 0 else COL_FAR for b in d.bias]
+    ax.barh(y, d.rmse, color=colors)
+    ax.set_yticks(y)
+    ax.set_yticklabels([_abbrev(s) for s in d.spec], fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlabel('RMSE(estimate - truth) on own-price elasticity')
+    ax.set_title('33. Own-elasticity recovery vs. truth  '
+                 '(orange = negative bias, green = positive)')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '33_elasticity_recovery_own.png')
+
+
+def plot_elasticity_recovery_cross(elas, df_long, truth_elas, out_dir):
+    """34. Per-spec MAE: same-firm vs between-firm (grouped bar)."""
+    best = sio.best_per_spec(df_long)
+    truth_jk = truth_elas.set_index(['product_j', 'product_k'])[
+        ['elasticity', 'same_firm']]
+    rows = []
+    for spec, sid in best.items():
+        sub = elas[(elas.spec_label == spec) & (elas.start_id == sid)] \
+            .set_index(['product_j', 'product_k'])['elasticity']
+        common = sub.index.intersection(truth_jk.index)
+        s = sub.loc[common]
+        t = truth_jk.loc[common, 'elasticity']
+        sf = truth_jk.loc[common, 'same_firm'].astype(bool).to_numpy()
+        err = (s - t).to_numpy()
+        rows.append({'spec': spec,
+                     'mae_same': float(np.mean(np.abs(err[sf]))),
+                     'mae_diff': float(np.mean(np.abs(err[~sf])))})
+    d = pd.DataFrame(rows).sort_values('mae_same')
+
+    fig, ax = plt.subplots(figsize=(8, _fig_height(len(d))))
+    y = np.arange(len(d))
+    h = 0.4
+    ax.barh(y - h/2, d.mae_same, height=h, color=GROUP_COLORS['sigma'],
+            label='same firm')
+    ax.barh(y + h/2, d.mae_diff, height=h, color=GROUP_COLORS['pi'],
+            label='different firm')
+    ax.set_yticks(y)
+    ax.set_yticklabels([_abbrev(s) for s in d.spec], fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlabel('MAE on cross-elasticity (estimate - truth)')
+    ax.set_title('34. Cross-elasticity recovery: same-firm vs different-firm')
+    ax.legend(loc='lower right')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '34_elasticity_recovery_cross.png')
+
+
+def plot_post_estimation_recovery(post, truth_post, df_long, out_dir):
+    """35. Scatter of merger-prediction error vs parameter-RMSE per spec."""
+    truth = truth_post.iloc[0]
+    best = sio.best_per_spec(df_long)
+    # parameter RMSE per spec (from analyses #08-#09 logic)
+    rec_rmse = {}
+    for spec, sid in best.items():
+        sub = df_long[(df_long.spec_label == spec) & (df_long.start_id == sid)]
+        rec_rmse[spec] = float(np.sqrt(np.mean(sub.abs_error.values ** 2)))
+
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
+    targets = [('mean_own_elas', 'own-elas error'),
+               ('mean_markup', 'markup error'),
+               ('mean_delta_hhi', 'Δ-HHI (merger) error')]
+    for ax, (col, label) in zip(axes, targets):
+        xs, ys = [], []
+        for _, r in post.iterrows():
+            if pd.notna(r[col]) and pd.notna(truth[col]):
+                xs.append(rec_rmse.get(r.spec_label, np.nan))
+                ys.append(float(r[col]) - float(truth[col]))
+        ax.scatter(xs, ys, s=30, color=PALETTE[0], alpha=0.85,
+                   edgecolor='white')
+        ax.axhline(0, color=COL_REF, linestyle='--', linewidth=1)
+        ax.set_xlabel('parameter total RMSE')
+        ax.set_ylabel(f'{label}  (estimate - truth)')
+        ax.set_title(col)
+        sns.despine(ax=ax)
+    fig.suptitle('35. Post-estimation recovery vs. parameter recovery')
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    _save(fig, out_dir, '35_post_estimation_recovery.png')
+
+
+# ---------------------------------------------------------------------------
 # Cross-seed plots
 # ---------------------------------------------------------------------------
 
@@ -644,6 +1085,37 @@ def main() -> None:
         plot_demo_overfit(df, out_dir)
         plot_param_stability(df, out_dir)
         plot_best_vs_truth_start(df, out_dir)
+
+        # Elasticity plots (20-35) -- only when CSVs are present.
+        if sio.has_elasticities(specs_dir):
+            elas = sio.load_elasticities(specs_dir)
+            post = sio.load_post_estimation(specs_dir)
+            seed_dir = specs_dir.parent.parent
+            truth_elas = (sio.load_truth_elasticities(seed_dir)
+                          if sio.has_truth_elasticities(seed_dir) else None)
+            truth_post = (sio.load_truth_post_estimation(seed_dir)
+                          if (seed_dir / 'truth_post_estimation.csv').exists()
+                          else None)
+
+            plot_elasticity_own_summary(elas, df, truth_elas, out_dir)
+            plot_elasticity_multistart_stability(elas, df, out_dir)
+            plot_elasticity_top_substitutes(elas, df, out_dir)
+            plot_elasticity_asymmetry(elas, df, out_dir)
+            plot_elasticity_spec_spearman(elas, df, out_dir)
+            plot_elasticity_firm_substitution(elas, df, out_dir)
+            plot_elasticity_own_cross_spec_stability(elas, df, out_dir)
+            plot_elasticity_cross_cross_spec_stability(elas, df, out_dir)
+            plot_elasticity_pairwise_mad(elas, df, out_dir)
+            plot_elasticity_pair_across_sims(elas, df, truth_elas, out_dir)
+            plot_elasticity_pair_best_sim_across_specs(elas, df, truth_elas, out_dir)
+            if truth_elas is not None:
+                plot_elasticity_recovery_own(elas, df, truth_elas, out_dir)
+                plot_elasticity_recovery_cross(elas, df, truth_elas, out_dir)
+            if truth_post is not None:
+                plot_post_estimation_recovery(post, truth_post, df, out_dir)
+        else:
+            print(f'[skip elasticity plots for seed={seed} iv={iv_mode}: '
+                  f'run compute_elasticities.py first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 
