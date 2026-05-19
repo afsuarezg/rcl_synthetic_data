@@ -69,17 +69,29 @@ REPO_URL="${REPO_URL:-https://github.com/afsuarezg/rcl_synthetic_data.git}"
 PROJECT_DIR="${PROJECT_DIR:-$SCRATCH/rcl_synthetic_data}"
 
 # -----------------------------------------------------------------------------
-# Fresh checkout. Every run wipes $PROJECT_DIR and re-clones from REPO_URL,
-# guaranteeing the code we execute matches the current tip of the remote
-# branch. Outputs from previous runs that lived under $PROJECT_DIR/output/
-# are destroyed in the process.
+# Code refresh (clone-or-update).
 #
-# To preserve outputs across runs (e.g., to resume an interrupted sweep),
-# comment out the `rm -rf` line. `run_specs.py` is itself resume-friendly:
-# it skips any spec that already has an `estimates_summary.csv` on disk.
+# On the first run $PROJECT_DIR doesn't exist yet, so we `git clone`. On every
+# subsequent run we `fetch` + `reset --hard origin/HEAD` to bring the tracked
+# files exactly in line with the remote tip. Untracked files — notably the
+# `output/` tree from previous runs — are left untouched, which is what gives
+# us resume behavior: `run_specs.py` skips any spec whose
+# `estimates_summary.csv` already exists.
+#
+# `reset --hard` will discard any uncommitted edits made directly on the
+# Sherlock copy. That's intentional: this directory is a disposable working
+# copy, not a place to develop.
+#
+# If you ever want a truly clean slate (e.g. the previous run's outputs are
+# from an incompatible code version), `rm -rf "$PROJECT_DIR"` once from the
+# Sherlock shell and resubmit.
 # -----------------------------------------------------------------------------
-# rm -rf "$PROJECT_DIR"
-git clone "$REPO_URL" "$PROJECT_DIR"
+if [ ! -d "$PROJECT_DIR/.git" ]; then
+    git clone "$REPO_URL" "$PROJECT_DIR"
+else
+    git -C "$PROJECT_DIR" fetch --quiet origin
+    git -C "$PROJECT_DIR" reset --hard origin/HEAD
+fi
 cd "$PROJECT_DIR"
 
 # -----------------------------------------------------------------------------
