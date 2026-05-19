@@ -38,7 +38,7 @@
 #SBATCH --job-name=blp-specs-main          # name shown in `squeue`
 #SBATCH --output=blp_specs.%j.out          # stdout file (%j = SLURM job id)
 #SBATCH --error=blp_specs.%j.err           # stderr file
-#SBATCH --time=24:00:00                    # max wallclock; SLURM kills the job past this
+#SBATCH --time=46:00:00                    # max wallclock; SLURM kills the job past this
 #SBATCH -p normal                          # partition / queue
 #SBATCH -c 4                               # CPU cores allocated (single node)
 #SBATCH --mem=16GB                         # total RAM the job may use
