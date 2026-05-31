@@ -56,6 +56,14 @@ ROOT="${ROOT:-output}"
 
 cd "$PROJECT_DIR"
 
+# Make the repo's flat modules (specs_io.py, ...) importable. pyproject.toml
+# declares a [project], so uv treats the repo as a package and does NOT put the
+# repo root on sys.path; on Sherlock `python -c "import specs_io"` and the three
+# scripts below would then fail with ModuleNotFoundError (cwd isn't auto-added
+# to sys.path there, unlike a default local shell). Setting PYTHONPATH fixes the
+# import for the precondition check AND all three scripts.
+export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 # uv on PATH (sbatch runs a non-login shell, so .bashrc may not have sourced it).
 if ! command -v uv >/dev/null 2>&1; then
     # shellcheck disable=SC1091
