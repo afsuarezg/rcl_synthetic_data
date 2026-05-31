@@ -154,7 +154,7 @@ Notable differences from the array path above:
 | Submission | `sbatch` + chained `--dependency=afterok` | one `sbatch` |
 | Parallelism | 60 concurrent tasks | serial in one task |
 | Wallclock | ~30 min | ~5 h |
-| Repo location | `$HOME/rcl_synthetic_data` (you cloned it) | `$SCRATCH/rcl_synthetic_data` (the script clones it for you) |
+| Repo location | `$HOME/rcl_synthetic_data` (you cloned it) | `/oak/stanford/groups/polinsky/rcl_synthetic_data` (the script clones it for you) |
 | Headers | `--cpus-per-task=4`, `--mem=8G`, `--time=02:00:00` per task | `-c 4`, `--mem=16GB`, `--time=24:00:00` for the whole sweep |
 | Logs | `slurm/logs/spec_${JOBID}_<idx>.{out,err}` | `slurm/logs/blp_specs.${JOBID}.{out,err}` |
 
@@ -164,17 +164,17 @@ skips if present, and inside each spec, `estimate.py` skips any per-start
 pickle that already exists. So re-submitting the same job after a partial
 run just fills in whatever is missing.
 
-Outputs land under `$SCRATCH/rcl_synthetic_data/output/seed_0/iv_both/specs/`
-(the **single-job path uses `$SCRATCH`**, not `$HOME`). Pull them back with:
+Outputs land under
+`/oak/stanford/groups/polinsky/rcl_synthetic_data/output/seed_0/iv_both/specs/`
+(the **single-job path uses the polinsky group's OAK space**, not `$HOME`).
+Unlike `$SCRATCH`, OAK is persistent, so results are safe to leave there between
+runs. Pull a local copy with:
 
 ```bash
-# from your laptop — adjust the source path for $SCRATCH:
-rsync -avz YOURSUNETID@login.sherlock.stanford.edu:'/scratch/users/YOURSUNETID/rcl_synthetic_data/output/seed_0/iv_both/specs/' \
+# from your laptop:
+rsync -avz YOURSUNETID@login.sherlock.stanford.edu:'/oak/stanford/groups/polinsky/rcl_synthetic_data/output/seed_0/iv_both/specs/' \
            "/Users/andres/Documents/Mergers RCL/rcl_synthetic_data/output/seed_0/iv_both/specs/"
 ```
-
-(Use `echo $SCRATCH` on Sherlock to see your exact `$SCRATCH` path — it's
-typically `/scratch/users/<sunetid>`.)
 
 ## 7. Monitor
 

@@ -5,7 +5,8 @@
 # =============================================================================
 #
 # What this script does, in one paragraph:
-#   It clones the rcl_synthetic_data repo into $SCRATCH, sets up a Python
+#   It clones the rcl_synthetic_data repo into the polinsky group's OAK space
+#   (/oak/stanford/groups/polinsky/rcl_synthetic_data), sets up a Python
 #   environment with uv, simulates a synthetic BLP dataset (seed 0), runs
 #   60 model specifications (a grid of X2 variables × demographic controls)
 #   against that dataset using both instrument sets and 5 optimizer restarts
@@ -55,18 +56,21 @@ set -euo pipefail
 # Configuration.
 #
 # REPO_URL    — where to git-clone the project from. Edit this once if you fork.
-# PROJECT_DIR — where on Sherlock the working copy lives. $SCRATCH is the right
-#               place for compute-heavy jobs: it's high-throughput, large, and
-#               purged on a rolling schedule. Don't leave anything precious
-#               here long-term — rsync results back to your laptop after each run.
+# PROJECT_DIR — where on Sherlock the working copy lives. We use the polinsky
+#               group's OAK space: it's persistent (not purged like $SCRATCH),
+#               large, and shared across the group, so results survive between
+#               runs and don't need to be rsync'd off immediately. OAK has
+#               lower throughput than $SCRATCH, but this pipeline is
+#               compute-bound rather than I/O-bound, so that's fine.
 #
 # Both variables use the `${VAR:-default}` syntax, which lets you override
 # them on the sbatch command line without editing this file:
 #
 #     sbatch --export=REPO_URL=git@github.com:other/rcl_synthetic_data.git slurm/main_job.sh
+#     sbatch --export=PROJECT_DIR=$SCRATCH/rcl_synthetic_data slurm/main_job.sh
 # -----------------------------------------------------------------------------
 REPO_URL="${REPO_URL:-https://github.com/afsuarezg/rcl_synthetic_data.git}"
-PROJECT_DIR="${PROJECT_DIR:-$SCRATCH/rcl_synthetic_data}"
+PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
 
 # ADD_STARTS — how many *new* optimizer starts to add per spec on this
 # submission. The first run with no existing starts produces ADD_STARTS starts
@@ -223,8 +227,8 @@ uv run python viz_specs.py --seed 0 --iv-mode both
 
 # -----------------------------------------------------------------------------
 # Done. Print where outputs live and a copy-paste-ready rsync command for
-# pulling them back to your laptop. Remember: $SCRATCH is purged on a
-# rolling schedule, so don't leave results sitting there indefinitely.
+# pulling a local copy back to your laptop. Outputs persist on OAK (it's not
+# purged like $SCRATCH), so they're safe to leave there between runs.
 # -----------------------------------------------------------------------------
 echo "[$(date -Iseconds)] done."
 echo "outputs:  $PROJECT_DIR/output/seed_0/iv_both/specs/"
