@@ -254,6 +254,57 @@ def plot_multistart_stability(df: pd.DataFrame, out_dir: Path) -> None:
     _save(fig, out_dir, '02_multistart_stability.png')
 
 
+def plot_objective_spec_comparison(df: pd.DataFrame, out_dir: Path) -> None:
+    """Per-spec GMM-objective summary across perturbed starts: a mean bar with a
+    ±1 std error bar and a dashed min/max range, sorted by mean. Complements 01
+    (best only) and 02 (raw per-start points) by aggregating the same objectives
+    into mean ± std ± range. The truth-warm start is excluded from the statistics
+    (near-zero by construction) but drawn as a per-spec reference tick."""
+    starts = sio.starts_table(df)
+    pert = starts[~starts.is_truth_start]
+    grp = pert.groupby('spec_label').objective
+    stats = pd.DataFrame({
+        'mean': grp.mean(),
+        'std':  grp.std(ddof=0),
+        'min':  grp.min(),
+        'max':  grp.max(),
+        'n':    grp.size(),
+    }).sort_values('mean')
+    if stats.empty:
+        return
+    order = stats.index.tolist()
+    truth_obj = starts[starts.is_truth_start].set_index('spec_label').objective
+
+    fig, ax = plt.subplots(figsize=(8, _fig_height(len(order))))
+    y = np.arange(len(order))
+    ax.barh(y, stats['mean'], color=PALETTE[0], alpha=0.9, label='mean')
+    ax.errorbar(stats['mean'], y, xerr=stats['std'].fillna(0.0), fmt='none',
+                ecolor='#444', elinewidth=1.0, capsize=3, capthick=1.0,
+                label='±1 std', zorder=3)
+    # dashed min/max range with end-cap ticks
+    for yi, lo, hi in zip(y, stats['min'], stats['max']):
+        ax.plot([lo, hi], [yi, yi], color='#999', lw=0.7, ls='--', zorder=2)
+        ax.plot([lo, hi], [yi, yi], marker='|', color='#666', ms=6,
+                ls='none', zorder=2)
+    # truth-warm reference tick per spec
+    tx = [truth_obj.get(s, np.nan) for s in order]
+    ax.scatter(tx, y, marker='|', color=COL_REF, s=80,
+               label='truth-warm reference', zorder=4)
+    # n= annotation at the right edge of each row
+    x_max = float(np.nanmax(stats['max'].to_numpy()))
+    for yi, n in zip(y, stats['n']):
+        ax.text(x_max * 1.01, yi, f'n={int(n)}', va='center', ha='left',
+                fontsize=6, color='#555')
+    ax.set_yticks(y)
+    ax.set_yticklabels([_abbrev(s) for s in order], fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlabel('GMM objective')
+    ax.set_title('36. Objective by specification (mean ± std, range)')
+    ax.legend(loc='lower right')
+    sns.despine(ax=ax)
+    _save(fig, out_dir, '36_objective_spec_comparison.png')
+
+
 def plot_convergence_audit(df: pd.DataFrame, out_dir: Path) -> None:
     starts = sio.starts_table(df)
     pert = starts[~starts.is_truth_start]
@@ -1199,6 +1250,7 @@ def main() -> None:
 
         plot_objective_ranking(df, out_dir)
         plot_multistart_stability(df, out_dir)
+        plot_objective_spec_comparison(df, out_dir)
         plot_convergence_audit(df, out_dir)
         plot_global_minimum(df, out_dir)
         plot_two_basin(df, out_dir, args.basin_threshold)
