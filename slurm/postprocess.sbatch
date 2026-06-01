@@ -10,6 +10,7 @@
 #       /oak/stanford/groups/polinsky/rcl_synthetic_data/output/seed_0/iv_both/specs/
 #   but it does NOT run the three post-estimation modules. This script runs
 #   them, in dependency order, against that existing OAK tree:
+#       0) git pull --ff-only       -> sync code first (skip with GIT_PULL=0)
 #       1) compute_elasticities.py  -> elasticities_detail.csv,
 #                                       post_estimation_summary.csv (per iv) and
 #                                       truth_elasticities.csv /
@@ -28,8 +29,10 @@
 # How to submit (from anywhere on Sherlock):
 #       sbatch slurm/postprocess.sbatch
 #
-#   This operates IN PLACE on the existing OAK working copy; it does NOT clone
-#   or `git reset` (unlike main_job.sh), so it won't touch the output/ tree.
+#   This operates IN PLACE on the existing OAK working copy. It runs
+#   `git pull --ff-only` first to sync the committed code (skippable with
+#   GIT_PULL=0), but unlike main_job.sh it never clones or `git reset --hard`,
+#   and the output/ tree is gitignored so the pull never touches generated data.
 #   Note: a subsequent `sbatch slurm/main_job.sh` does `git reset --hard`, which
 #   would discard this file if it isn't committed to the repo. Commit + push it
 #   if you want it to survive the next sweep submission.
@@ -55,6 +58,18 @@ PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
 ROOT="${ROOT:-output}"
 
 cd "$PROJECT_DIR"
+
+# Sync the committed code so post-processing runs against the current
+# plot_specs.py / analyze_specs.py, not whatever the OAK clone last had.
+# --ff-only is safe: it never makes a merge commit and aborts cleanly if the
+# working copy has diverged (uncommitted edits to tracked files will block it).
+# output/ is gitignored, so the pull never touches generated data. Skip with
+# GIT_PULL=0, e.g. to run a hand-edited local change:
+#     sbatch --export=GIT_PULL=0 slurm/postprocess.sbatch
+if [ "${GIT_PULL:-1}" != "0" ]; then
+    echo "[$(date -Iseconds)] git pull --ff-only in $PROJECT_DIR"
+    git pull --ff-only
+fi
 
 # Make the repo's flat modules (specs_io.py, ...) importable. pyproject.toml
 # declares a [project], so uv treats the repo as a package and does NOT put the
