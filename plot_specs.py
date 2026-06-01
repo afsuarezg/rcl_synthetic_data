@@ -16,12 +16,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import textwrap
 from collections import Counter
 from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.ticker
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -48,8 +50,21 @@ DPI = 150
 # Helpers
 # ---------------------------------------------------------------------------
 
+_TITLE_NUM = re.compile(r'^\s*\d{1,2}\.\s+')
+
+
 def _save(fig: plt.Figure, out_dir: Path, name: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Strip the leading analysis index ("26. ") from every title; filenames keep
+    # the number so on-disk ordering is unaffected.
+    for ax in fig.axes:
+        t = ax.get_title()
+        if t:
+            ax.set_title(_TITLE_NUM.sub('', t))
+    for txt in fig.texts:  # suptitle lives in fig.texts
+        s = txt.get_text()
+        if s:
+            txt.set_text(_TITLE_NUM.sub('', s))
     fig.savefig(out_dir / name, dpi=DPI, bbox_inches='tight')
     plt.close(fig)
 
@@ -86,6 +101,99 @@ def _rmse(values: np.ndarray) -> float:
 def _fig_height(n_rows: int, per_row: float = 0.18, min_h: float = 4.0,
                 max_h: float = 22.0) -> float:
     return max(min_h, min(max_h, per_row * n_rows + 1.0))
+
+
+def _hue_colors(values, hue, palette='tab10'):
+    """Per-point colour list aligned with `values`, using the same sorted-unique
+    -> palette mapping seaborn applies for categorical hue."""
+    cats = sorted(pd.unique(hue))
+    pal = sns.color_palette(palette, len(cats))
+    cmap = dict(zip(cats, pal))
+    return [cmap[h] for h in hue]
+
+
+def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
+                               colors=None, color=COL_REF, marker_size=40):
+    """Clip the value-axis to Tukey 3*IQR bounds; render out-of-range points as
+    labeled edge triangles instead of letting them stretch the axis.
+
+    orient='v': values on y -> clip ylim, '^'(top)/'v'(bottom) triangles at x.
+    orient='h': values on x -> clip xlim, '>'(right)/'<'(left) triangles at y.
+
+    The original seaborn markers beyond the clip are hidden by the new limit
+    (clip_on=True); our triangles use clip_on=False to sit at the edge.
+    Co-located outliers (same position + side) collapse to one triangle, labeled
+    with the value (single) or a count (e.g. '4x'). No-op (axis left to
+    autoscale) when <6 points, zero IQR, or no outliers exist.
+    """
+    # A tight clip otherwise triggers matplotlib's '1e-9' offset stamp. Only a
+    # ScalarFormatter supports these toggles; a categorical axis has none.
+    val_ax = ax.yaxis if orient == 'v' else ax.xaxis
+    fmt = val_ax.get_major_formatter()
+    if isinstance(fmt, matplotlib.ticker.ScalarFormatter):
+        fmt.set_useOffset(False)
+        fmt.set_scientific(False)
+
+    pts = [(p, float(v), (colors[i] if colors is not None else color))
+           for i, (p, v) in enumerate(zip(positions, values))
+           if not (isinstance(v, float) and np.isnan(v))]
+    if len(pts) < 6:
+        return
+    s = sorted(v for _, v, _ in pts)
+    n = len(s)
+    q1, q3 = s[n // 4], s[(3 * n) // 4]
+    iqr = q3 - q1
+    if iqr <= 0:
+        return
+    lo, hi = q1 - 3.0 * iqr, q3 + 3.0 * iqr
+    outliers = [(p, v, c) for p, v, c in pts if v < lo or v > hi]
+    if not outliers:
+        return
+
+    # Floor a near-degenerate window so we never produce a sliver axis.
+    median = s[n // 2]
+    min_span = max(0.1 * abs(median), 1e-6)
+    if hi - lo < min_span:
+        mid = 0.5 * (lo + hi)
+        lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
+    rng = hi - lo
+    pad = 0.05 * rng
+    near = hi + pad * 0.5   # just inside the high edge
+    far = lo - pad * 0.5    # just inside the low edge
+    if orient == 'v':
+        ax.set_ylim(lo - pad, hi + pad)
+    else:
+        ax.set_xlim(lo - pad, hi + pad)
+
+    # Collapse outliers sharing a (position, side) into one triangle.
+    groups: dict[tuple, list] = {}
+    for p, v, c in outliers:
+        groups.setdefault((p, v > hi), []).append((v, c))
+    for (p, high), members in groups.items():
+        c = members[0][1]
+        edge = near if high else far
+        label = (f'{members[0][0]:.2f}' if len(members) == 1
+                 else f'{len(members)}x')
+        bbox = dict(boxstyle='round,pad=0.15', facecolor='white',
+                    edgecolor='none', alpha=0.75)
+        if orient == 'v':
+            marker = '^' if high else 'v'
+            ax.scatter([p], [edge], marker=marker, color=c, s=marker_size + 20,
+                       edgecolor='black', linewidth=0.8, zorder=5, clip_on=False)
+            ax.annotate(label, xy=(p, edge),
+                        xytext=(0, -10 if high else 10),
+                        textcoords='offset points', ha='center',
+                        va='top' if high else 'bottom', fontsize=7, zorder=6,
+                        bbox=bbox)
+        else:
+            marker = '>' if high else '<'
+            ax.scatter([edge], [p], marker=marker, color=c, s=marker_size + 20,
+                       edgecolor='black', linewidth=0.8, zorder=5, clip_on=False)
+            ax.annotate(label, xy=(edge, p),
+                        xytext=(-10 if high else 10, 0),
+                        textcoords='offset points',
+                        ha='right' if high else 'left', va='center',
+                        fontsize=7, zorder=6, bbox=bbox)
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +618,10 @@ def plot_elasticity_own_summary(elas, df_long, truth_elas, out_dir):
     fig, ax = plt.subplots(figsize=(8, _fig_height(len(order))))
     sns.boxplot(data=d, y='spec', x='elasticity', order=order, orient='h',
                 color=PALETTE[0], ax=ax, fliersize=2, linewidth=0.8)
+    spec_pos = {s: i for i, s in enumerate(order)}
+    _clip_with_outlier_markers(
+        ax, [spec_pos[s] for s in d.spec], d.elasticity.tolist(),
+        orient='h', color=PALETTE[0])
     if truth_elas is not None:
         tval = float(truth_elas[truth_elas.own_price].elasticity.mean())
         ax.axvline(tval, color='black', linestyle='--', linewidth=1,
@@ -541,7 +653,11 @@ def plot_elasticity_multistart_stability(elas, df_long, out_dir):
     spec_order = keep
     sub['spec_order'] = sub.spec_label.map({s: i for i, s in enumerate(spec_order)})
     sns.stripplot(data=sub, y='spec_order', x='elasticity', hue='product_j',
+                  orient='h', native_scale=True,
                   jitter=0.18, dodge=True, palette='tab10', size=4, ax=ax)
+    _clip_with_outlier_markers(
+        ax, sub.spec_order.tolist(), sub.elasticity.tolist(), orient='h',
+        colors=_hue_colors(sub.elasticity, sub.product_j))
     ax.set_yticks(np.arange(len(spec_order)))
     ax.set_yticklabels([_abbrev(s) for s in spec_order], fontsize=8)
     ax.set_xlabel('own-price elasticity')
@@ -680,6 +796,9 @@ def plot_elasticity_own_cross_spec_stability(elas, df_long, out_dir):
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.stripplot(data=d, x='product', y='elas', hue='firm',
                   palette='tab10', jitter=0.2, size=4, ax=ax)
+    _clip_with_outlier_markers(
+        ax, d['product'].tolist(), d.elas.tolist(), orient='v',
+        colors=_hue_colors(d.elas, d.firm))
     ax.set_xlabel('product')
     ax.set_ylabel('own-price elasticity (best perturbed start)')
     ax.set_title('26. Own-price elasticity per product across specs')
@@ -713,6 +832,10 @@ def plot_elasticity_cross_cross_spec_stability(elas, df_long, out_dir, k=5):
     fig, ax = plt.subplots(figsize=(8, 4.5))
     sns.stripplot(data=d, x='pair', y='elas', color=PALETTE[0],
                   jitter=0.18, size=4, ax=ax)
+    pair_pos = {p: i for i, p in enumerate(dict.fromkeys(d.pair))}
+    _clip_with_outlier_markers(
+        ax, [pair_pos[p] for p in d.pair], d.elas.tolist(), orient='v',
+        color=PALETTE[0])
     ax.set_xlabel('(j,k) pair')
     ax.set_ylabel('cross-price elasticity')
     ax.set_title(f'27. Top-{k} substitute pair elasticities across specs')
@@ -769,6 +892,8 @@ def plot_elasticity_pair_across_sims(elas, df_long, truth_elas, out_dir):
             xs, ys = zip(*sorted(vals))
             ax.scatter(xs, ys, s=40, color=PALETTE[0], zorder=3,
                        edgecolor='white')
+            _clip_with_outlier_markers(ax, list(xs), list(ys), orient='v',
+                                       color=PALETTE[0])
         if truth_elas is not None:
             r = truth_elas[(truth_elas.product_j == jj)
                            & (truth_elas.product_k == kk)]
@@ -811,6 +936,8 @@ def plot_elasticity_pair_best_sim_across_specs(elas, df_long, truth_elas, out_di
                                    ('e_jk', j, k), ('e_kj', k, j)]):
         ax.scatter(d.obj, d[name], s=30, color=PALETTE[0],
                    edgecolor='white')
+        _clip_with_outlier_markers(ax, d.obj.tolist(), d[name].tolist(),
+                                   orient='v', color=PALETTE[0])
         if truth_elas is not None:
             r = truth_elas[(truth_elas.product_j == jj)
                            & (truth_elas.product_k == kk)]
