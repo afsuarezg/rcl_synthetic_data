@@ -21,6 +21,8 @@ import numpy as np
 import pandas as pd
 import pyblp
 
+from solve_diagnostics import extract_solve_diagnostics
+
 # Loosen pyblp's inversion thresholds so the 2SLS weighting matrix falls
 # back to a pseudo-inverse rather than aborting when MD+MS is large.
 pyblp.options.collinear_atol = pyblp.options.collinear_rtol = 0.0
@@ -304,6 +306,7 @@ def main() -> None:
                 "converged": converged, "elapsed_sec": float("nan"),
                 "error_class": "",
                 "estimates": flatten_params(res.sigma, res.pi, res.beta, res.gamma),
+                "diagnostics": extract_solve_diagnostics(res, stage="solve", seed=i),
             })
             if obj < best_obj:
                 best_obj = obj
@@ -327,6 +330,8 @@ def main() -> None:
                 "start_id": i, "tag": tag, "objective": np.nan,
                 "converged": False, "elapsed_sec": elapsed,
                 "error_class": exc.__class__.__name__, "estimates": None,
+                "diagnostics": extract_solve_diagnostics(
+                    exc, stage="solve", seed=i, elapsed_sec=elapsed),
             })
             continue
         elapsed = time.perf_counter() - t0
@@ -345,6 +350,8 @@ def main() -> None:
             "converged": converged, "elapsed_sec": elapsed,
             "error_class": "",
             "estimates": flatten_params(res.sigma, res.pi, res.beta, res.gamma),
+            "diagnostics": extract_solve_diagnostics(
+                res, stage="solve", seed=i, elapsed_sec=elapsed),
         })
         if obj < best_obj:
             best_obj = obj
@@ -353,9 +360,10 @@ def main() -> None:
     rows: list[dict] = []
     for rec in records:
         est = rec["estimates"]
+        diag = rec.get("diagnostics", {})
         for pname, tval in truth_params.items():
             evalue = est[pname] if est is not None else np.nan
-            rows.append({
+            row = {
                 "start_id": rec["start_id"],
                 "tag": rec["tag"],
                 "param_name": pname,
@@ -366,7 +374,11 @@ def main() -> None:
                 "converged": rec["converged"],
                 "elapsed_sec": rec["elapsed_sec"],
                 "error_class": rec["error_class"],
-            })
+            }
+            # Add the richer solve diagnostics, but never clobber the columns
+            # above — downstream (run_specs.aggregate) relies on their dtypes.
+            row.update({k: v for k, v in diag.items() if k not in row})
+            rows.append(row)
     summary_path = os.path.join(variant_dir, "estimates_summary.csv")
     pd.DataFrame(rows).to_csv(summary_path, index=False)
     n_pkl = sum(1 for r in records if r["estimates"] is not None)
