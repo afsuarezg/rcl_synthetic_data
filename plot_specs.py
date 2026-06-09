@@ -259,6 +259,10 @@ def plot_multistart_stability(df: pd.DataFrame, out_dir: Path) -> None:
     tx = [truth_obj.get(s, np.nan) for s in order]
     ax.scatter(tx, np.arange(len(order)), marker='|', color=COL_REF, s=80,
                label='truth-warm reference', zorder=3)
+    # Keep one extreme start from stretching the x-axis: clip to the bulk and
+    # mark out-of-range objectives at the edge with their value (cf. #20/#27).
+    _clip_with_outlier_markers(ax, pert.order.tolist(), pert.objective.tolist(),
+                               orient='h', color=PALETTE[0])
     ax.set_yticks(np.arange(len(order)))
     ax.set_yticklabels([_abbrev(s) for s in order], fontsize=7)
     ax.set_xlabel('GMM objective (per perturbed start)')
