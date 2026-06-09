@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -56,8 +57,14 @@ def _run_and_save(out_dir: Path, filename: str, func, *args, **kwargs) -> None:
     """Call func(*args, **kwargs), tee output to stdout, and save to out_dir/filename."""
     out_dir.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        func(*args, **kwargs)
+    try:
+        with contextlib.redirect_stdout(buf):
+            func(*args, **kwargs)
+    except Exception as exc:
+        # Don't let one analysis kill the whole report sweep (esp. on a long
+        # SLURM run). Record the traceback in the report and on stdout, continue.
+        buf.write(f'\n[ERROR in {filename}: {exc.__class__.__name__}: {exc}]\n')
+        buf.write(traceback.format_exc())
     text = buf.getvalue()
     print(text, end='')
     (out_dir / filename).write_text(text, encoding='utf-8')
@@ -569,9 +576,13 @@ def elasticity_asymmetry(elas: pd.DataFrame, df_long: pd.DataFrame) -> None:
                           'abs_diff': abs(v - lookup[(k, j)])})
     diffs.sort(key=lambda r: r['abs_diff'], reverse=True)
 
-    vals = np.array([r['abs_diff'] for r in diffs])
     print(f'  Spec: {rank1_spec}')
     print(f'  N pairs:  {len(diffs)}')
+    if not diffs:
+        print('  No symmetric (j,k)/(k,j) elasticity pairs available.')
+        print()
+        return
+    vals = np.array([r['abs_diff'] for r in diffs])
     print(f'  |e_jk - e_kj|  mean={vals.mean():.4f}  median={np.median(vals):.4f}  '
           f'max={vals.max():.4f}')
     print()

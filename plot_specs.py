@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import re
 import textwrap
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -67,6 +68,19 @@ def _save(fig: plt.Figure, out_dir: Path, name: str) -> None:
             txt.set_text(_TITLE_NUM.sub('', s))
     fig.savefig(out_dir / name, dpi=DPI, bbox_inches='tight')
     plt.close(fig)
+
+
+def _safe_plot(fn, *args) -> None:
+    """Run one plot; on failure log the traceback and continue rather than kill
+    the whole run (esp. on a long SLURM job). Mirrors the try/except that
+    analyze_specs._run_and_save wraps each report in. Any half-built figure is
+    discarded so it can't leak into a later plot."""
+    try:
+        fn(*args)
+    except Exception as exc:
+        print(f'  [ERROR in {fn.__name__}: {exc.__class__.__name__}: {exc}]')
+        traceback.print_exc()
+        plt.close('all')
 
 
 def _abbrev(spec: str) -> str:
@@ -732,6 +746,10 @@ def plot_elasticity_top_substitutes(elas, df_long, out_dir):
     rank1_spec = obj_pairs[0][0]
     rank1_sid = best[rank1_spec]
     sub = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)]
+    if sub.empty:
+        print(f'  [skip 22: rank-1 spec {rank1_spec!r} start {rank1_sid} '
+              f'has no elasticities]')
+        return
     pivot = sub.pivot(index='product_j', columns='product_k', values='elasticity')
 
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -766,6 +784,10 @@ def plot_elasticity_asymmetry(elas, df_long, out_dir):
     for (j, k), v in lookup.items():
         if j < k and (k, j) in lookup:
             pairs.append((j, k, v, lookup[(k, j)]))
+    if not pairs:
+        print(f'  [skip 23: rank-1 spec {rank1_spec!r} start {rank1_sid} '
+              f'has no symmetric (j,k)/(k,j) cross-price pairs]')
+        return
 
     fig, ax = plt.subplots(figsize=(6, 6))
     xs = [p[2] for p in pairs]
@@ -819,6 +841,10 @@ def plot_elasticity_firm_substitution(elas, df_long, out_dir):
     rank1_sid = best[rank1_spec]
     sub = elas[(elas.spec_label == rank1_spec) & (elas.start_id == rank1_sid)
                & ~elas.own_price]
+    if sub.empty:
+        print(f'  [skip 25: rank-1 spec {rank1_spec!r} start {rank1_sid} '
+              f'has no cross-price elasticities]')
+        return
     pivot = sub.groupby(['firm_j', 'firm_k']).elasticity.mean().unstack()
 
     fig, ax = plt.subplots(figsize=(5.5, 4.5))
@@ -880,6 +906,10 @@ def plot_elasticity_cross_cross_spec_stability(elas, df_long, out_dir, k=5):
                 rows.append({'pair': f'({j},{k_})', 'spec': spec,
                              'elas': float(r.elasticity.iloc[0])})
     d = pd.DataFrame(rows)
+    if d.empty:
+        print(f'  [skip 27: no cross-price elasticities for top-{k} '
+              f'substitute pairs of rank-1 spec {rank1_spec!r}]')
+        return
     fig, ax = plt.subplots(figsize=(8, 4.5))
     sns.stripplot(data=d, x='pair', y='elas', color=PALETTE[0],
                   jitter=0.18, size=4, ax=ax)
@@ -1248,22 +1278,22 @@ def main() -> None:
         out_dir = specs_dir.parent / 'graphs'
         print(f'plot: seed={seed} iv={iv_mode} -> {out_dir.relative_to(root.parent)}')
 
-        plot_objective_ranking(df, out_dir)
-        plot_multistart_stability(df, out_dir)
-        plot_objective_spec_comparison(df, out_dir)
-        plot_convergence_audit(df, out_dir)
-        plot_global_minimum(df, out_dir)
-        plot_two_basin(df, out_dir, args.basin_threshold)
-        plot_runtime(df, out_dir)
-        plot_price_coef(df, out_dir)
-        plot_recovery_rmse(df, out_dir)
-        plot_recovery_vs_objective(df, out_dir)
-        plot_param_level_error(df, out_dir)
-        plot_pi_zero(df, out_dir)
-        plot_omitted_x2(df, out_dir)
-        plot_demo_overfit(df, out_dir)
-        plot_param_stability(df, out_dir)
-        plot_best_vs_truth_start(df, out_dir)
+        _safe_plot(plot_objective_ranking, df, out_dir)
+        _safe_plot(plot_multistart_stability, df, out_dir)
+        _safe_plot(plot_objective_spec_comparison, df, out_dir)
+        _safe_plot(plot_convergence_audit, df, out_dir)
+        _safe_plot(plot_global_minimum, df, out_dir)
+        _safe_plot(plot_two_basin, df, out_dir, args.basin_threshold)
+        _safe_plot(plot_runtime, df, out_dir)
+        _safe_plot(plot_price_coef, df, out_dir)
+        _safe_plot(plot_recovery_rmse, df, out_dir)
+        _safe_plot(plot_recovery_vs_objective, df, out_dir)
+        _safe_plot(plot_param_level_error, df, out_dir)
+        _safe_plot(plot_pi_zero, df, out_dir)
+        _safe_plot(plot_omitted_x2, df, out_dir)
+        _safe_plot(plot_demo_overfit, df, out_dir)
+        _safe_plot(plot_param_stability, df, out_dir)
+        _safe_plot(plot_best_vs_truth_start, df, out_dir)
 
         # Elasticity plots (20-35) -- only when CSVs are present.
         if sio.has_elasticities(specs_dir):
@@ -1276,22 +1306,22 @@ def main() -> None:
                           if (seed_dir / 'truth_post_estimation.csv').exists()
                           else None)
 
-            plot_elasticity_own_summary(elas, df, truth_elas, out_dir)
-            plot_elasticity_multistart_stability(elas, df, out_dir)
-            plot_elasticity_top_substitutes(elas, df, out_dir)
-            plot_elasticity_asymmetry(elas, df, out_dir)
-            plot_elasticity_spec_spearman(elas, df, out_dir)
-            plot_elasticity_firm_substitution(elas, df, out_dir)
-            plot_elasticity_own_cross_spec_stability(elas, df, out_dir)
-            plot_elasticity_cross_cross_spec_stability(elas, df, out_dir)
-            plot_elasticity_pairwise_mad(elas, df, out_dir)
-            plot_elasticity_pair_across_sims(elas, df, truth_elas, out_dir)
-            plot_elasticity_pair_best_sim_across_specs(elas, df, truth_elas, out_dir)
+            _safe_plot(plot_elasticity_own_summary, elas, df, truth_elas, out_dir)
+            _safe_plot(plot_elasticity_multistart_stability, elas, df, out_dir)
+            _safe_plot(plot_elasticity_top_substitutes, elas, df, out_dir)
+            _safe_plot(plot_elasticity_asymmetry, elas, df, out_dir)
+            _safe_plot(plot_elasticity_spec_spearman, elas, df, out_dir)
+            _safe_plot(plot_elasticity_firm_substitution, elas, df, out_dir)
+            _safe_plot(plot_elasticity_own_cross_spec_stability, elas, df, out_dir)
+            _safe_plot(plot_elasticity_cross_cross_spec_stability, elas, df, out_dir)
+            _safe_plot(plot_elasticity_pairwise_mad, elas, df, out_dir)
+            _safe_plot(plot_elasticity_pair_across_sims, elas, df, truth_elas, out_dir)
+            _safe_plot(plot_elasticity_pair_best_sim_across_specs, elas, df, truth_elas, out_dir)
             if truth_elas is not None:
-                plot_elasticity_recovery_own(elas, df, truth_elas, out_dir)
-                plot_elasticity_recovery_cross(elas, df, truth_elas, out_dir)
+                _safe_plot(plot_elasticity_recovery_own, elas, df, truth_elas, out_dir)
+                _safe_plot(plot_elasticity_recovery_cross, elas, df, truth_elas, out_dir)
             if truth_post is not None:
-                plot_post_estimation_recovery(post, truth_post, df, out_dir)
+                _safe_plot(plot_post_estimation_recovery, post, truth_post, df, out_dir)
         else:
             print(f'[skip elasticity plots for seed={seed} iv={iv_mode}: '
                   f'run compute_elasticities.py first]')
@@ -1305,10 +1335,10 @@ def main() -> None:
         flat = len(per_iv) == 1
         cross_dir = root / 'graphs' if flat else root / 'graphs' / f'iv_{iv_mode}'
         print(f'plot: cross-seed iv={iv_mode} -> {cross_dir.relative_to(root.parent)}')
-        plot_bias_across_seeds(seed_dfs, cross_dir)
-        plot_recovery_across_seeds(seed_dfs, cross_dir)
-        plot_best_spec_consistency(seed_dfs, cross_dir)
-        plot_price_coef_across_seeds(seed_dfs, cross_dir)
+        _safe_plot(plot_bias_across_seeds, seed_dfs, cross_dir)
+        _safe_plot(plot_recovery_across_seeds, seed_dfs, cross_dir)
+        _safe_plot(plot_best_spec_consistency, seed_dfs, cross_dir)
+        _safe_plot(plot_price_coef_across_seeds, seed_dfs, cross_dir)
 
 
 if __name__ == '__main__':
