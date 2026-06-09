@@ -10,7 +10,8 @@
 #       /oak/stanford/groups/polinsky/rcl_synthetic_data/output/seed_0/iv_both/specs/
 #   but it does NOT run the three post-estimation modules. This script runs
 #   them, in dependency order, against that existing OAK tree:
-#       0) git pull --ff-only       -> sync code first (skip with GIT_PULL=0)
+#       0) checkout -f -B $GIT_REF  -> force code to origin/$GIT_REF first
+#                                      (default add-solve-diagnostics; skip with GIT_PULL=0)
 #       1) compute_elasticities.py  -> elasticities_detail.csv,
 #                                       post_estimation_summary.csv (per iv) and
 #                                       truth_elasticities.csv /
@@ -29,10 +30,12 @@
 # How to submit (from anywhere on Sherlock):
 #       sbatch slurm/postprocess.sbatch
 #
-#   This operates IN PLACE on the existing OAK working copy. It runs
-#   `git pull --ff-only` first to sync the committed code (skippable with
-#   GIT_PULL=0), but unlike main_job.sh it never clones or `git reset --hard`,
-#   and the output/ tree is gitignored so the pull never touches generated data.
+#   This operates IN PLACE on the existing OAK working copy. It force-checks-out
+#   origin/$GIT_REF first (default add-solve-diagnostics) so the job always runs
+#   the intended code regardless of which branch the clone was left on. That
+#   discards uncommitted edits to tracked files; output/ is gitignored, so
+#   generated data is never touched. Skip syncing with GIT_PULL=0, or point at a
+#   different branch with GIT_REF=<branch>.
 #   Note: a subsequent `sbatch slurm/main_job.sh` does `git reset --hard`, which
 #   would discard this file if it isn't committed to the repo. Commit + push it
 #   if you want it to survive the next sweep submission.
@@ -59,16 +62,38 @@ ROOT="${ROOT:-output}"
 
 cd "$PROJECT_DIR"
 
-# Sync the committed code so post-processing runs against the current
-# plot_specs.py / analyze_specs.py, not whatever the OAK clone last had.
-# --ff-only is safe: it never makes a merge commit and aborts cleanly if the
-# working copy has diverged (uncommitted edits to tracked files will block it).
-# output/ is gitignored, so the pull never touches generated data. Skip with
-# GIT_PULL=0, e.g. to run a hand-edited local change:
-#     sbatch --export=GIT_PULL=0 slurm/postprocess.sbatch
+# Sync code: force the working copy onto the branch/ref this job should run, so
+# post-processing uses the intended plot_specs.py / analyze_specs.py rather than
+# "whatever the OAK clone happened to have checked out".
+#
+# Why not `git pull --ff-only`? pull only merges into the CURRENTLY checked-out
+# branch. If OAK sits on a different branch (e.g. master), the fetch updates the
+# remote-tracking ref but the working-tree files never move, so the job silently
+# runs stale code -- this exact failure produced an old-line-number traceback
+# even after a "successful" pull. `git checkout -f -B` makes the synced result
+# independent of whatever branch was previously checked out.
+#
+#   GIT_REF    -- branch (or ref) to run; default add-solve-diagnostics:
+#                   sbatch --export=GIT_REF=master slurm/postprocess.sbatch
+#   GIT_PULL=0 -- skip syncing entirely, to run hand-edited local code:
+#                   sbatch --export=GIT_PULL=0 slurm/postprocess.sbatch
+#
+# Destructive: this discards uncommitted edits to *tracked* files (the same
+# assumption main_job.sh already makes with its `git reset --hard`). output/ is
+# gitignored, so generated data is never touched. Overwriting this very script
+# mid-run is safe -- sbatch executes a snapshot copied at submit time, not the
+# file on disk.
+GIT_REF="${GIT_REF:-add-solve-diagnostics}"
 if [ "${GIT_PULL:-1}" != "0" ]; then
-    echo "[$(date -Iseconds)] git pull --ff-only in $PROJECT_DIR"
-    git pull --ff-only
+    echo "[$(date -Iseconds)] syncing $PROJECT_DIR -> origin/$GIT_REF"
+    git fetch origin --quiet --prune
+    if ! git rev-parse --verify --quiet "origin/$GIT_REF" >/dev/null; then
+        echo "ERROR: origin/$GIT_REF not found after fetch." >&2
+        echo "       Set GIT_REF to a branch that has been pushed to origin." >&2
+        exit 1
+    fi
+    git checkout -f -B "$GIT_REF" "origin/$GIT_REF"
+    echo "[$(date -Iseconds)] now at $(git rev-parse --short HEAD) on branch $(git rev-parse --abbrev-ref HEAD)"
 fi
 
 # Make the repo's flat modules (specs_io.py, ...) importable. pyproject.toml
