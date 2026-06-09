@@ -144,21 +144,33 @@ def best_per_spec(df: pd.DataFrame, include_truth_start: bool = False) -> dict[s
     """Return {spec_label: start_id} for the best start of each spec.
 
     Best = lowest objective among `converged == True`; falls back to lowest
-    objective overall if no start converged. By default the truth-warm start
-    (`is_truth_start=True`, started at the DGP parameter) is *excluded* — its
-    presence is informative as a reference but it can dominate naive multistart
-    comparisons (it always has near-zero recovery error by construction).
-    Pass `include_truth_start=True` to keep it in the pool.
+    objective overall if no start converged. Starts that errored during the
+    solve (`error_class` set) are excluded entirely: an errored solve produced
+    no usable ProblemResults — it has no pickle, hence no elasticities — so it
+    must never be crowned "best" (a spuriously low objective could otherwise win
+    the fallback). A spec whose every (non-truth) start errored is omitted from
+    the result rather than represented by an unusable start. The `error_class`
+    filter is skipped if the column is absent (pre-diagnostics summaries).
+
+    By default the truth-warm start (`is_truth_start=True`, started at the DGP
+    parameter) is *excluded* — its presence is informative as a reference but it
+    can dominate naive multistart comparisons (it always has near-zero recovery
+    error by construction). Pass `include_truth_start=True` to keep it in the pool.
     """
+    has_err = 'error_class' in df.columns
+    cols = ['start_id', 'objective', 'converged', 'is_truth_start']
+    if has_err:
+        cols = cols + ['error_class']
     out: dict[str, int] = {}
     for spec, sub in df.groupby('spec_label'):
-        starts = sub.drop_duplicates('start_id')[
-            ['start_id', 'objective', 'converged', 'is_truth_start']
-        ]
+        starts = sub.drop_duplicates('start_id')[cols]
         if not include_truth_start:
             starts = starts[~starts['is_truth_start']]
-            if starts.empty:
-                continue
+        if has_err:
+            errored = starts['error_class'].fillna('').astype(str).str.strip() != ''
+            starts = starts[~errored]
+        if starts.empty:
+            continue
         valid = starts[starts['converged']]
         pool = valid if not valid.empty else starts
         out[spec] = int(pool.sort_values('objective').iloc[0]['start_id'])
