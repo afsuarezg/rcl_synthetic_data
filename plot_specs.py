@@ -127,18 +127,26 @@ def _hue_colors(values, hue, palette='tab10'):
 
 
 def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
-                               colors=None, color=COL_REF, marker_size=40):
+                               colors=None, color=COL_REF, marker_size=40,
+                               bounds=None):
     """Clip the value-axis to Tukey 3*IQR bounds; render out-of-range points as
     labeled edge triangles instead of letting them stretch the axis.
 
     orient='v': values on y -> clip ylim, '^'(top)/'v'(bottom) triangles at x.
     orient='h': values on x -> clip xlim, '>'(right)/'<'(left) triangles at y.
 
+    bounds=None (default): auto window from Tukey 3*IQR (current behavior). No-op
+    (axis left to autoscale) when <6 points, zero IQR, or no outliers exist.
+
+    bounds=(lo, hi): a FIXED window. The value-axis is pinned to exactly (lo, hi)
+    unconditionally -- regardless of whether any point lies outside it -- and the
+    same labeled edge triangles flag the out-of-range points. None of the IQR
+    heuristics or <6-point/zero-IQR guards apply in this path.
+
     The original seaborn markers beyond the clip are hidden by the new limit
     (clip_on=True); our triangles use clip_on=False to sit at the edge.
     Co-located outliers (same position + side) collapse to one triangle, labeled
-    with the value (single) or a count (e.g. '4x'). No-op (axis left to
-    autoscale) when <6 points, zero IQR, or no outliers exist.
+    with the value (single) or a count (e.g. '4x').
     """
     # A tight clip otherwise triggers matplotlib's '1e-9' offset stamp. Only a
     # ScalarFormatter supports these toggles; a categorical axis has none.
@@ -151,33 +159,50 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
     pts = [(p, float(v), (colors[i] if colors is not None else color))
            for i, (p, v) in enumerate(zip(positions, values))
            if not (isinstance(v, float) and np.isnan(v))]
-    if len(pts) < 6:
-        return
-    s = sorted(v for _, v, _ in pts)
-    n = len(s)
-    q1, q3 = s[n // 4], s[(3 * n) // 4]
-    iqr = q3 - q1
-    if iqr <= 0:
-        return
-    lo, hi = q1 - 3.0 * iqr, q3 + 3.0 * iqr
-    outliers = [(p, v, c) for p, v, c in pts if v < lo or v > hi]
-    if not outliers:
-        return
 
-    # Floor a near-degenerate window so we never produce a sliver axis.
-    median = s[n // 2]
-    min_span = max(0.1 * abs(median), 1e-6)
-    if hi - lo < min_span:
-        mid = 0.5 * (lo + hi)
-        lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
-    rng = hi - lo
-    pad = 0.05 * rng
-    near = hi + pad * 0.5   # just inside the high edge
-    far = lo - pad * 0.5    # just inside the low edge
-    if orient == 'v':
-        ax.set_ylim(lo - pad, hi + pad)
+    if bounds is not None:
+        # Fixed window: pin the axis to exactly (lo, hi) FIRST and always, so the
+        # domain does not depend on whether any point falls outside it. Skip every
+        # IQR heuristic and the <6-point / zero-IQR guards.
+        lo, hi = float(bounds[0]), float(bounds[1])
+        if orient == 'v':
+            ax.set_ylim(lo, hi)
+        else:
+            ax.set_xlim(lo, hi)
+        eps = 0.01 * (hi - lo) if hi > lo else 1e-6
+        near = hi + eps   # just beyond the high edge
+        far = lo - eps    # just beyond the low edge
+        outliers = [(p, v, c) for p, v, c in pts if v < lo or v > hi]
+        if not outliers:
+            return
     else:
-        ax.set_xlim(lo - pad, hi + pad)
+        if len(pts) < 6:
+            return
+        s = sorted(v for _, v, _ in pts)
+        n = len(s)
+        q1, q3 = s[n // 4], s[(3 * n) // 4]
+        iqr = q3 - q1
+        if iqr <= 0:
+            return
+        lo, hi = q1 - 3.0 * iqr, q3 + 3.0 * iqr
+        outliers = [(p, v, c) for p, v, c in pts if v < lo or v > hi]
+        if not outliers:
+            return
+
+        # Floor a near-degenerate window so we never produce a sliver axis.
+        median = s[n // 2]
+        min_span = max(0.1 * abs(median), 1e-6)
+        if hi - lo < min_span:
+            mid = 0.5 * (lo + hi)
+            lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
+        rng = hi - lo
+        pad = 0.05 * rng
+        near = hi + pad * 0.5   # just inside the high edge
+        far = lo - pad * 0.5    # just inside the low edge
+        if orient == 'v':
+            ax.set_ylim(lo - pad, hi + pad)
+        else:
+            ax.set_xlim(lo - pad, hi + pad)
 
     # Collapse outliers sharing a (position, side) into one triangle.
     groups: dict[tuple, list] = {}
@@ -252,6 +277,8 @@ def plot_multistart_stability(df: pd.DataFrame, out_dir: Path) -> None:
     pert['order'] = pert.spec_label.map({s: i for i, s in enumerate(order)})
     truth_obj = starts[starts.is_truth_start].set_index('spec_label').objective
 
+    XLIM = (0.0, 60.0)   # fixed, comparable objective domain across runs
+
     fig, ax = plt.subplots(figsize=(8, _fig_height(len(order))))
     sns.stripplot(data=pert, y='order', x='objective', orient='h',
                   jitter=0.18, size=4, color=PALETTE[0], ax=ax)
@@ -259,10 +286,14 @@ def plot_multistart_stability(df: pd.DataFrame, out_dir: Path) -> None:
     tx = [truth_obj.get(s, np.nan) for s in order]
     ax.scatter(tx, np.arange(len(order)), marker='|', color=COL_REF, s=80,
                label='truth-warm reference', zorder=3)
-    # Keep one extreme start from stretching the x-axis: clip to the bulk and
-    # mark out-of-range objectives at the edge with their value (cf. #20/#27).
+    # Pin the objective axis to a fixed 0-60 window for cross-run comparability;
+    # objectives outside it are flagged at the edge with their value (cf. #20/#27).
     _clip_with_outlier_markers(ax, pert.order.tolist(), pert.objective.tolist(),
-                               orient='h', color=PALETTE[0])
+                               orient='h', color=PALETTE[0], bounds=XLIM)
+    # Flag truth-warm references that fall outside the window too, so a clipped
+    # reference marker never silently disappears.
+    _clip_with_outlier_markers(ax, list(range(len(order))), tx,
+                               orient='h', color=COL_REF, bounds=XLIM)
     ax.set_yticks(np.arange(len(order)))
     ax.set_yticklabels([_abbrev(s) for s in order], fontsize=7)
     ax.set_xlabel('GMM objective (per perturbed start)')
