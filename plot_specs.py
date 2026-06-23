@@ -1168,6 +1168,57 @@ def plot_post_estimation_recovery(post, truth_post, df_long, out_dir):
     _save(fig, out_dir, '35_post_estimation_recovery.png')
 
 
+def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
+    """36. Predicted merger effect per spec vs the true counterfactual.
+
+    Reads merger_prediction_by_spec.csv (validate_merger_prediction.py --sweep):
+    for each demand spec's best-objective start, the predicted post-merger
+    Δprice (merging firms) and Δ-HHI, against the DGP-truth benchmark. Points
+    are coloured by whether the spec includes the `education` demographic --
+    every degenerate prediction belongs to that group.
+    """
+    from matplotlib.lines import Line2D
+
+    df = by_spec.copy()
+    df['has_edu'] = df['spec_label'].str.contains('education')
+    df = df.sort_values('price_rmse').reset_index(drop=True)
+    x = np.arange(len(df))
+    colors = [COL_FAR if e else COL_NEAR for e in df['has_edu']]
+    true_dp = float(df['bench_true_dp_merging_pct'].iloc[0])
+    true_hhi = float(df['bench_true_delta_hhi'].iloc[0])
+    n_bad = int(((df['pred_dp_merging_pct'].abs() >= 10) | (df['corr_dp'] <= 0.5)).sum())
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+    panels = [('pred_dp_merging_pct', true_dp, f'truth = {true_dp:+.2f}%',
+               'merging-firm Δprice (%)', True),
+              ('pred_delta_hhi', true_hhi, f'truth = {true_hhi:+.0f}',
+               'Δ-HHI (merger)', False)]
+    for ax, (col, tval, tlabel, ylabel, symlog) in zip(axes, panels):
+        ax.scatter(x, df[col], c=colors, s=34, edgecolor='white', zorder=3)
+        ax.axhline(tval, color=COL_REF, ls='--', lw=1.2, zorder=2)
+        if symlog:
+            ax.set_yscale('symlog', linthresh=5)
+        ax.set_xlabel('spec rank (sorted by price RMSE, best first)')
+        ax.set_ylabel(ylabel)
+        ax.set_title(col)
+        ax.text(0.98, 0.04, tlabel, transform=ax.transAxes, ha='right',
+                va='bottom', fontsize=8, color=COL_REF)
+        sns.despine(ax=ax)
+
+    handles = [
+        Line2D([], [], marker='o', ls='', mfc=COL_NEAR, mec='white',
+               label='no education demo'),
+        Line2D([], [], marker='o', ls='', mfc=COL_FAR, mec='white',
+               label='includes education demo'),
+        Line2D([], [], color=COL_REF, ls='--', lw=1.2, label='true counterfactual'),
+    ]
+    axes[0].legend(handles=handles, loc='best', fontsize=8, framealpha=0.9)
+    fig.suptitle(f'36. Merger prediction by demand spec '
+                 f'({n_bad}/{len(df)} degenerate, all include education)')
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    _save(fig, out_dir, '36_merger_prediction.png')
+
+
 # ---------------------------------------------------------------------------
 # Cross-seed plots
 # ---------------------------------------------------------------------------
@@ -1360,6 +1411,13 @@ def main() -> None:
         else:
             print(f'[skip elasticity plots for seed={seed} iv={iv_mode}: '
                   f'run compute_elasticities.py first]')
+
+        mp_csv = specs_dir.parent / 'merger_prediction_by_spec.csv'
+        if mp_csv.exists():
+            _safe_plot(plot_merger_prediction, pd.read_csv(mp_csv), out_dir)
+        else:
+            print(f'[skip merger-prediction plot for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --sweep first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 
