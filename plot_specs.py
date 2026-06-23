@@ -1169,13 +1169,17 @@ def plot_post_estimation_recovery(post, truth_post, df_long, out_dir):
 
 
 def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
-    """36. Predicted merger effect per spec vs the true counterfactual.
+    """37. Predicted merger effect per spec vs the true counterfactual.
 
     Reads merger_prediction_by_spec.csv (validate_merger_prediction.py --sweep):
     for each demand spec's best-objective start, the predicted post-merger
     Δprice (merging firms) and Δ-HHI, against the DGP-truth benchmark. Points
     are coloured by whether the spec includes the `education` demographic --
     every degenerate prediction belongs to that group.
+
+    Each y-axis is clipped to a fixed window so the well-behaved cluster and the
+    truth line stay readable; the degenerate specs that fall outside are flagged
+    as labelled edge triangles via _clip_with_outlier_markers (cf. plot #02).
     """
     from matplotlib.lines import Line2D
 
@@ -1189,15 +1193,17 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
     n_bad = int(((df['pred_dp_merging_pct'].abs() >= 10) | (df['corr_dp'] <= 0.5)).sum())
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+    # (column, truth value, truth label, y label, clip window). The window keeps
+    # every well-behaved point in view; blow-ups become edge triangles.
     panels = [('pred_dp_merging_pct', true_dp, f'truth = {true_dp:+.2f}%',
-               'merging-firm Δprice (%)', True),
+               'merging-firm Δprice (%)', (1.5, 4.0)),
               ('pred_delta_hhi', true_hhi, f'truth = {true_hhi:+.0f}',
-               'Δ-HHI (merger)', False)]
-    for ax, (col, tval, tlabel, ylabel, symlog) in zip(axes, panels):
+               'Δ-HHI (merger)', (680.0, 740.0))]
+    for ax, (col, tval, tlabel, ylabel, bounds) in zip(axes, panels):
         ax.scatter(x, df[col], c=colors, s=34, edgecolor='white', zorder=3)
         ax.axhline(tval, color=COL_REF, ls='--', lw=1.2, zorder=2)
-        if symlog:
-            ax.set_yscale('symlog', linthresh=5)
+        _clip_with_outlier_markers(ax, x.tolist(), df[col].tolist(), orient='v',
+                                   colors=colors, bounds=bounds)
         ax.set_xlabel('spec rank (sorted by price RMSE, best first)')
         ax.set_ylabel(ylabel)
         ax.set_title(col)
@@ -1213,10 +1219,10 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
         Line2D([], [], color=COL_REF, ls='--', lw=1.2, label='true counterfactual'),
     ]
     axes[0].legend(handles=handles, loc='best', fontsize=8, framealpha=0.9)
-    fig.suptitle(f'36. Merger prediction by demand spec '
+    fig.suptitle(f'37. Merger prediction by demand spec '
                  f'({n_bad}/{len(df)} degenerate, all include education)')
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    _save(fig, out_dir, '36_merger_prediction.png')
+    _save(fig, out_dir, '37_merger_prediction.png')
 
 
 # ---------------------------------------------------------------------------
