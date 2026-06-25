@@ -128,7 +128,7 @@ def _hue_colors(values, hue, palette='tab10'):
 
 def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
                                colors=None, color=COL_REF, marker_size=40,
-                               bounds=None):
+                               bounds=None, label_rotation=0):
     """Clip the value-axis to Tukey 3*IQR bounds; render out-of-range points as
     labeled edge triangles instead of letting them stretch the axis.
 
@@ -147,6 +147,11 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
     (clip_on=True); our triangles use clip_on=False to sit at the edge.
     Co-located outliers (same position + side) collapse to one triangle, labeled
     with the value (single) or a count (e.g. '4x').
+
+    The value labels sit just beyond the clipped axis, so they pass
+    annotation_clip=False (matplotlib otherwise drops annotations whose data-xy
+    falls outside the axes). label_rotation rotates them (e.g. 90 for dense
+    clusters); the default 0 keeps the original horizontal placement.
     """
     # A tight clip otherwise triggers matplotlib's '1e-9' offset stamp. Only a
     # ScalarFormatter supports these toggles; a categorical axis has none.
@@ -223,7 +228,8 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
                         xytext=(0, -10 if high else 10),
                         textcoords='offset points', ha='center',
                         va='top' if high else 'bottom', fontsize=7, zorder=6,
-                        bbox=bbox)
+                        bbox=bbox, annotation_clip=False,
+                        rotation=label_rotation, rotation_mode='anchor')
         else:
             marker = '>' if high else '<'
             ax.scatter([edge], [p], marker=marker, color=c, s=marker_size + 20,
@@ -232,7 +238,9 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
                         xytext=(-10 if high else 10, 0),
                         textcoords='offset points',
                         ha='right' if high else 'left', va='center',
-                        fontsize=7, zorder=6, bbox=bbox)
+                        fontsize=7, zorder=6, bbox=bbox,
+                        annotation_clip=False,
+                        rotation=label_rotation, rotation_mode='anchor')
 
 
 # ---------------------------------------------------------------------------
@@ -1203,11 +1211,13 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
         ax.scatter(x, df[col], c=colors, s=34, edgecolor='white', zorder=3)
         ax.axhline(tval, color=COL_REF, ls='--', lw=1.2, zorder=2)
         _clip_with_outlier_markers(ax, x.tolist(), df[col].tolist(), orient='v',
-                                   colors=colors, bounds=bounds)
+                                   colors=colors, bounds=bounds, label_rotation=90)
         ax.set_xlabel('spec rank (sorted by price RMSE, best first)')
         ax.set_ylabel(ylabel)
         ax.set_title(col)
-        ax.text(0.98, 0.04, tlabel, transform=ax.transAxes, ha='right',
+        # bottom-left: free of both the in-window cluster and the right-side
+        # edge-label columns (which the bottom-right corner now collides with).
+        ax.text(0.02, 0.04, tlabel, transform=ax.transAxes, ha='left',
                 va='bottom', fontsize=8, color=COL_REF)
         sns.despine(ax=ax)
 

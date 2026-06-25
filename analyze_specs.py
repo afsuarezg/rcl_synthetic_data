@@ -974,6 +974,108 @@ def post_estimation_recovery(post: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
+# Objective-by-spec summary (36) -- text companion to figure 36
+# ---------------------------------------------------------------------------
+
+def objective_spec_comparison(df: pd.DataFrame) -> None:
+    """36. Per-spec GMM-objective summary across perturbed starts (mean ± std, range).
+
+    Text companion to plot #36 (plot_specs.plot_objective_spec_comparison).
+    Aggregates the perturbed-start objectives per spec into mean, population std
+    (ddof=0, matching the figure's error bars), and min/max range, sorted by
+    mean. Complements 01 (best only) and 02 (spread, ddof=1). The truth-warm
+    start is excluded from the stats and reported separately as a per-spec
+    reference (the GMM objective evaluated at truth).
+    """
+    _hdr('36. Objective by specification (mean ± std, range; perturbed starts)')
+    starts = sio.starts_table(df)
+    pert = starts[~starts.is_truth_start]
+    grp = pert.groupby('spec_label').objective
+    stats = pd.DataFrame({
+        'mean': grp.mean(),
+        'std':  grp.std(ddof=0),  # population std, matching the figure error bars
+        'min':  grp.min(),
+        'max':  grp.max(),
+        'n':    grp.size(),
+    }).sort_values('mean')
+    if stats.empty:
+        print('  No perturbed starts.')
+        return
+    stats['range'] = stats['max'] - stats['min']
+    truth_obj = dict(zip(starts[starts.is_truth_start].spec_label,
+                         starts[starts.is_truth_start].objective))
+
+    print('  std = population std (ddof=0), matching the figure error bars.')
+    print('  truth_ref = GMM objective at the truth-warm start (excluded from stats).')
+    print()
+    header = (f'  {"rank":>4}  {"mean":>10}  {"std":>9}  {"min":>10}  {"max":>10}  '
+              f'{"range":>9}  {"n":>3}  {"truth_ref":>10}  Specification')
+    print(header)
+    _sep(len(header))
+    for i, (spec, r) in enumerate(stats.iterrows(), 1):
+        tref = truth_obj.get(spec, float('nan'))
+        print(f'  {i:>4}  {r["mean"]:>10.4f}  {r["std"]:>9.4f}  {r["min"]:>10.4f}  '
+              f'{r["max"]:>10.4f}  {r["range"]:>9.4f}  {int(r["n"]):>3}  '
+              f'{tref:>10.4f}  {spec}')
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Merger-prediction analysis (37) -- reads validate_merger_prediction.py output
+# ---------------------------------------------------------------------------
+
+def merger_prediction(by_spec: pd.DataFrame) -> None:
+    """37. Predicted post-merger effect per spec vs. the DGP-truth counterfactual.
+
+    Text companion to plot #37 (plot_specs.plot_merger_prediction). Reads
+    merger_prediction_by_spec.csv (validate_merger_prediction.py --sweep): for
+    each demand spec's best-objective start, the predicted Δprice on the merging
+    firms and the Δ-HHI, against the true counterfactual (firm 2 merged into
+    firm 1). Specs are listed in the same order as the figure's x-axis.
+    """
+    _hdr('37. Merger prediction by demand spec vs. DGP truth (best perturbed start)')
+    df = by_spec.copy()
+
+    # Truth benchmark -- identical across rows; take the first.
+    true_dp = float(df['bench_true_dp_merging_pct'].iloc[0])
+    true_dp_non = float(df['bench_true_dp_nonmerging_pct'].iloc[0])
+    true_hhi = float(df['bench_true_delta_hhi'].iloc[0])
+    print('  Truth (DGP counterfactual, merger of firm 2 into firm 1):')
+    print(f'    {"merging-firm Δprice":>22s} = {true_dp:+.4f} %')
+    print(f'    {"non-merging Δprice":>22s} = {true_dp_non:+.4f} %')
+    print(f'    {"Δ-HHI":>22s} = {true_hhi:+.4f}')
+    print()
+
+    # Degenerate flag: use the SAME criterion as plot_specs.plot_merger_prediction
+    # (n_bad) so this report's count matches the figure title. Do NOT substitute
+    # a "fell outside the plot window" test -- that gives a different number.
+    degen = (df['pred_dp_merging_pct'].abs() >= 10) | (df['corr_dp'] <= 0.5)
+    df['has_edu'] = df['spec_label'].str.contains('education')
+    n_bad = int(degen.sum())
+    n_bad_edu = int((degen & df['has_edu']).sum())
+    edu_note = ('all include the education demo' if n_bad and n_bad_edu == n_bad
+                else f'{n_bad_edu}/{n_bad} include the education demo')
+    print(f'  Degenerate predictions: {n_bad}/{len(df)} ({edu_note}).')
+    print('  Degenerate = |pred Δprice| >= 10% OR corr(pred, truth Δprice) <= 0.5.')
+    print()
+
+    df['degenerate'] = degen
+    df = df.sort_values('price_rmse').reset_index(drop=True)
+    print('  Per-spec, sorted by price RMSE (best first; same order as plot #37 x-axis).')
+    print('  Errors = prediction - truth.  corr = corr(pred, truth) over all firms.')
+    header = (f'  {"rank":>4}  {"price_RMSE":>10}  {"pred_dp%":>10}  {"dp_err":>10}  '
+              f'{"pred_dHHI":>10}  {"dHHI_err":>9}  {"corr":>6}  {"degen":>5}  Specification')
+    print(header)
+    _sep(len(header))
+    for i, r in df.iterrows():
+        print(f'  {i + 1:>4}  {r["price_rmse"]:>10.4f}  {r["pred_dp_merging_pct"]:>10.3f}  '
+              f'{r["dp_merging_err"]:>10.3f}  {r["pred_delta_hhi"]:>10.2f}  '
+              f'{r["delta_hhi_err"]:>9.2f}  {r["corr_dp"]:>6.3f}  '
+              f'{("YES" if r["degenerate"] else ""):>5}  {r["spec_label"]}')
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Cross-seed analyses (run when >=2 seeds for a given iv_mode)
 # ---------------------------------------------------------------------------
 
@@ -1185,6 +1287,21 @@ def main() -> None:
         else:
             print(f'[skip elasticity analyses for seed={seed} iv={iv_mode}: '
                   f'run compute_elasticities.py first]')
+
+        # Objective-by-spec summary (36) -- df only (like 01-15); placed here so
+        # the report numbering runs 36 -> 37 with the merger report below.
+        _run_and_save(out_dir, '36_objective_spec_comparison.txt',
+                      objective_spec_comparison, df)
+
+        # Merger-prediction report (37) -- separate dependency: the sweep CSV,
+        # produced by validate_merger_prediction.py --sweep (sits beside specs/).
+        mp_csv = specs_dir.parent / 'merger_prediction_by_spec.csv'
+        if mp_csv.exists():
+            _run_and_save(out_dir, '37_merger_prediction.txt',
+                          merger_prediction, pd.read_csv(mp_csv))
+        else:
+            print(f'[skip merger-prediction analysis for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --sweep first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 
