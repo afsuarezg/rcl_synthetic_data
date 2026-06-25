@@ -1241,10 +1241,11 @@ def plot_merger_prediction_by_product(per_obs: pd.DataFrame, out_dir: Path) -> N
     Reads merger_prediction_by_product.csv (validate_merger_prediction.py
     --per-product): for every merging product-market observation, the predicted
     %Δprice (best spec, rank-1 by price RMSE) against the true counterfactual.
-    The DGP redraws products each market, so the four merging "products" are four
-    ownership slots of exchangeable draws -- the variation lives across markets,
-    not across slots. A 45° line marks perfect prediction; tight scatter along it
-    means the best spec recovers the per-product price response well.
+    Points are coloured by ownership slot (firm 1 ×2, firm 2 ×2). When the DGP
+    redraws products each market the slots are exchangeable draws and overlap;
+    with persistent product characteristics they separate by product. A 45° line
+    marks perfect prediction; tight scatter along it means the best spec recovers
+    the per-product price response well.
     """
     df = per_obs.copy()
     slots = sorted(df['slot'].unique())

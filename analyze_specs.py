@@ -1104,9 +1104,13 @@ def merger_prediction_by_product(per_obs: pd.DataFrame) -> None:
     print('  (differs from #37 corr_dp: that is over all products on price-LEVEL')
     print('   changes; this is over merging obs on PERCENT changes.)')
     print()
-    print('  The DGP redraws products each market, so the 4 merging "products" are 4')
-    print('  ownership slots of exchangeable draws -- their across-market means are')
-    print('  ~equal; the variation is across markets (see the scatter, plot #38).')
+    slot_means = df.groupby('slot')['true_dp_pct'].mean()
+    spread = float(slot_means.max() - slot_means.min())
+    print(f'  True per-slot mean %Δprice spans [{slot_means.min():.2f}, '
+          f'{slot_means.max():.2f}] (spread {spread:.2f} pp across the 4 ownership slots).')
+    print('  With persistent product characteristics these means differ by product; if the')
+    print('  DGP redraws products each market the slots are exchangeable and the means')
+    print('  coincide, leaving cross-market spread as the only signal (see plot #38).')
     print()
     header = (f'  {"slot":<8}{"firm":>5}{"n":>5}  {"true_mean":>10}{"true_std":>10}  '
               f'{"pred_mean":>10}{"pred_std":>10}  {"err":>8}{"corr":>7}{"rmse":>8}')
