@@ -234,6 +234,14 @@ def main() -> None:
 
     # ---------------- Step 4: assemble outputs with instruments ----------------
     out_product = pd.DataFrame(pyblp.data_to_dict(sim_results.product_data))
+    # Stable global product identity (the 0..J-1 firm-pattern slot). Only needed
+    # under --product-availability, where markets are unbalanced and within-market
+    # position no longer identifies a product; downstream aggregation (elasticities)
+    # keys on this. Written only in that case so the default/balanced output is
+    # unchanged and nothing extra is fed to estimate.py / pyblp. Added to the OUTPUT
+    # (post-equilibrium, no RNG), so a re-run with the same flags is byte-identical.
+    if args.product_availability:
+        out_product["product_slot"] = product_slot
 
     # BLP rivals-sum instruments (drop constant; otherwise collinear with it).
     demand_iv_blp = pyblp.build_blp_instruments(

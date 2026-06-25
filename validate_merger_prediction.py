@@ -48,7 +48,7 @@ def build_truth_simulation(seed_dir: Path) -> pyblp.SimulationResults:
     product = pd.read_csv(seed_dir / "product_data.csv")
     agents = pd.read_csv(seed_dir / "agent_data.csv")
     drop = [c for c in product.columns
-            if c in ("prices", "shares")
+            if c in ("prices", "shares", "product_slot")
             or c.startswith("demand_instruments")
             or c.startswith("supply_instruments")]
     sim = pyblp.Simulation(

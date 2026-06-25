@@ -75,31 +75,52 @@ def elasticity_pairs(elasticities_flat, product_data: pd.DataFrame,
     each entry is a 1-D array of length J_t (the j-th row of the J_t x J_t
     matrix for that market). product_data is the data the result was solved on
     (sorted by market_ids).
+
+    Products are keyed by the stable global `product_slot` (the 0..J-1 firm
+    pattern position) when that column is present, so each product is identified
+    across markets even when --product-availability makes choice sets unbalanced
+    (a within-market *position* would otherwise mix different products). Pairs
+    are averaged over the markets where both slots are present. When the column
+    is absent (balanced data, e.g. the original tree) it falls back to the
+    within-market position, reproducing the previous behaviour exactly. Firms are
+    read from the data (constant per slot), so `firm_pattern` is unused and kept
+    only for call-site compatibility.
     """
-    product_data = product_data.sort_values('market_ids').reset_index(drop=True)
+    del firm_pattern  # retained for signature compatibility; firms come from data
+    # Stable sort: the elasticity slices below are in the original product_data
+    # (CSV) order, so within-market row order MUST be preserved or slots/firms
+    # desync from the elasticity rows. (quicksort, the default, reorders ties.)
+    product_data = product_data.sort_values(
+        'market_ids', kind='stable').reset_index(drop=True)
+    has_slot = 'product_slot' in product_data.columns
     markets = np.sort(product_data['market_ids'].unique())
     pair_vals: dict[tuple[int, int], list[float]] = {}
+    firm_of: dict[int, int] = {}
     flat_idx = 0
     for market_id in markets:
-        mask = product_data['market_ids'] == market_id
-        J_t = int(mask.sum())
-        # Stack J_t length-J_t arrays -> J_t x J_t
+        sub = product_data[product_data['market_ids'] == market_id]
+        J_t = len(sub)
+        # Stack J_t length-J_t arrays -> J_t x J_t (row a = within-market position)
         E_t = np.stack(list(elasticities_flat[flat_idx:flat_idx + J_t]))
-        for j in range(J_t):
-            for k in range(J_t):
-                pair_vals.setdefault((j, k), []).append(float(E_t[j, k]))
+        slots = sub['product_slot'].to_numpy() if has_slot else np.arange(J_t)
+        firms = sub['firm_ids'].to_numpy()
+        for a in range(J_t):
+            firm_of[int(slots[a])] = int(firms[a])
+            for b in range(J_t):
+                pair_vals.setdefault((int(slots[a]), int(slots[b])), []).append(
+                    float(E_t[a, b]))
         flat_idx += J_t
 
     rows = []
-    for (j, k), vals in pair_vals.items():
+    for (j, k), vals in sorted(pair_vals.items()):
         rows.append({
             'product_j': j,
             'product_k': k,
-            'firm_j': int(firm_pattern[j]),
-            'firm_k': int(firm_pattern[k]),
+            'firm_j': firm_of[j],
+            'firm_k': firm_of[k],
             'elasticity': float(np.mean(vals)),
             'own_price': j == k,
-            'same_firm': int(firm_pattern[j]) == int(firm_pattern[k]),
+            'same_firm': firm_of[j] == firm_of[k],
         })
     return pd.DataFrame(rows)
 
@@ -210,7 +231,7 @@ def build_truth_simulation(seed_dir: Path) -> pyblp.SimulationResults:
     # Drop equilibrium outputs + ownership-dependent instruments so pyblp
     # rebuilds them at truth ownership.
     drop = [c for c in product.columns
-            if c in ('prices', 'shares')
+            if c in ('prices', 'shares', 'product_slot')
             or c.startswith('demand_instruments')
             or c.startswith('supply_instruments')]
     sim_input = product.drop(columns=drop)
