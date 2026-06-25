@@ -1235,6 +1235,52 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
     _save(fig, out_dir, '37_merger_prediction.png')
 
 
+def plot_merger_prediction_by_product(per_obs: pd.DataFrame, out_dir: Path) -> None:
+    """38. Per-product merger price increase: best spec's prediction vs the truth.
+
+    Reads merger_prediction_by_product.csv (validate_merger_prediction.py
+    --per-product): for every merging product-market observation, the predicted
+    %Δprice (best spec, rank-1 by price RMSE) against the true counterfactual.
+    The DGP redraws products each market, so the four merging "products" are four
+    ownership slots of exchangeable draws -- the variation lives across markets,
+    not across slots. A 45° line marks perfect prediction; tight scatter along it
+    means the best spec recovers the per-product price response well.
+    """
+    df = per_obs.copy()
+    slots = sorted(df['slot'].unique())
+    pal = sns.color_palette('Set2', len(slots))
+    cmap = dict(zip(slots, pal))
+    spec = str(df['spec_label'].iloc[0])
+    corr = float(np.corrcoef(df['pred_dp_pct'], df['true_dp_pct'])[0, 1])
+    rmse = float(np.sqrt(((df['pred_dp_pct'] - df['true_dp_pct']) ** 2).mean()))
+
+    lo = float(min(df['true_dp_pct'].min(), df['pred_dp_pct'].min()))
+    hi = float(max(df['true_dp_pct'].max(), df['pred_dp_pct'].max()))
+    pad = 0.05 * (hi - lo)
+    lims = (lo - pad, hi + pad)
+
+    fig, ax = plt.subplots(figsize=(6.2, 6.2))
+    ax.axline((lo, lo), (hi, hi), color=COL_REF, ls='--', lw=1.2, zorder=1,
+              label='perfect prediction (45°)')
+    for slot in slots:
+        s = df[df['slot'] == slot]
+        ax.scatter(s['true_dp_pct'], s['pred_dp_pct'], s=14, alpha=0.55,
+                   color=cmap[slot], edgecolor='none', zorder=2, label=slot)
+    ax.set_xlim(*lims)
+    ax.set_ylim(*lims)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlabel('true price increase (%)')
+    ax.set_ylabel('predicted price increase (%)')
+    ax.text(0.04, 0.96, f'corr = {corr:.3f}\nRMSE = {rmse:.3f} pp\nn = {len(df)}',
+            transform=ax.transAxes, ha='left', va='top', fontsize=8, color=COL_REF)
+    ax.legend(loc='lower right', fontsize=8, framealpha=0.9, title='ownership slot')
+    ax.set_title(f'38. Per-product merger price increase: best spec vs truth\n'
+                 f'(merging products; spec {spec})', fontsize=10)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    _save(fig, out_dir, '38_merger_prediction_by_product.png')
+
+
 # ---------------------------------------------------------------------------
 # Cross-seed plots
 # ---------------------------------------------------------------------------
@@ -1434,6 +1480,13 @@ def main() -> None:
         else:
             print(f'[skip merger-prediction plot for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --sweep first]')
+
+        mpp_csv = specs_dir.parent / 'merger_prediction_by_product.csv'
+        if mpp_csv.exists():
+            _safe_plot(plot_merger_prediction_by_product, pd.read_csv(mpp_csv), out_dir)
+        else:
+            print(f'[skip per-product merger plot for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --per-product first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 

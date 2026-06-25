@@ -276,10 +276,81 @@ def run_sweep(seed_dir: Path, mode: str) -> None:
     print(f"  wrote {out_long}  ({len(long_rows)} spec-start rows)")
 
 
+# ---------------------------------------------------------------------------
+# Mode 3: per-product (per-observation) prices for the best spec
+# ---------------------------------------------------------------------------
+
+def _slot_labels(pre: pd.DataFrame, is_merging: np.ndarray) -> pd.Series:
+    """One label per merging obs: firm<id><a|b>. The DGP redraws products every
+    market (no persistent product identity), so the 4 merging "products" are 4
+    ownership slots -- firm 1's two products and firm 2's two -- of exchangeable
+    draws. a/b is the within-(market,firm) order; it carries no meaning beyond
+    splitting each firm's pair."""
+    ab = pre.groupby(["market_ids", "firm_ids"]).cumcount().map({0: "a", 1: "b"})
+    labels = "firm" + pre["firm_ids"].astype(int).astype(str) + ab
+    return labels[is_merging].reset_index(drop=True)
+
+
+def run_per_product(seed_dir: Path, mode: str) -> None:
+    """Per-merging-observation truth vs. best-spec predicted price increase.
+
+    Reads the best spec (rank-1 by price RMSE) from merger_prediction_by_spec.csv,
+    re-solves the post-merger FOC for that one estimate, and writes the predicted
+    and true %Δprice for every merging product-market observation.
+    """
+    by_spec_csv = seed_dir / mode / "merger_prediction_by_spec.csv"
+    if not by_spec_csv.exists():
+        raise SystemExit(f"{by_spec_csv} not found -- run --sweep first.")
+    by_spec = (pd.read_csv(by_spec_csv)
+               .sort_values("price_rmse").reset_index(drop=True))
+    best = by_spec.iloc[0]
+    label, bid = str(best["spec_label"]), int(best["best_start_id"])
+    pkl = seed_dir / mode / "specs" / f"spec_{label}" / "estimates" / f"start_{bid:02d}.pkl"
+    if not pkl.exists():
+        raise SystemExit(f"best-spec pickle not found: {pkl}")
+
+    pre, p_pre, orig_ids, merge_ids, is_merging = setup(seed_dir)
+    p_true_post, bench = truth_benchmark(seed_dir, p_pre, merge_ids, orig_ids, is_merging)
+    with pkl.open("rb") as fh:
+        res = pickle.load(fh)
+    costs = res.compute_costs()
+    p_pred = res.compute_prices(firm_ids=merge_ids, costs=costs).flatten()
+
+    obs = pre.loc[is_merging, ["market_ids", "firm_ids"]].reset_index(drop=True)
+    obs["slot"] = _slot_labels(pre, is_merging)
+    obs["p_pre"] = p_pre[is_merging]
+    obs["p_true_post"] = p_true_post[is_merging]
+    obs["p_pred"] = p_pred[is_merging]
+    obs["true_dp_pct"] = (obs["p_true_post"] / obs["p_pre"] - 1.0) * 100.0
+    obs["pred_dp_pct"] = (obs["p_pred"] / obs["p_pre"] - 1.0) * 100.0
+    obs["spec_label"] = label
+    obs["start_id"] = bid
+
+    out = seed_dir / mode / "merger_prediction_by_product.csv"
+    obs.to_csv(out, index=False)
+
+    print("=" * 90)
+    print(f"  Per-product merger prediction — {seed_dir} / {mode}")
+    print("=" * 90)
+    print(f"  best spec (rank 1 by price RMSE): {label}  (start {bid})")
+    print(f"  merging obs: {len(obs)}   true Δp merging {bench['true_dp_merging_pct']:+.2f}%")
+    corr = float(np.corrcoef(obs["pred_dp_pct"], obs["true_dp_pct"])[0, 1])
+    rmse = float(np.sqrt(((obs["pred_dp_pct"] - obs["true_dp_pct"]) ** 2).mean()))
+    print(f"  overall %Δp  corr {corr:.4f}   RMSE {rmse:.4f}")
+    print(f"  {'slot':<8}{'n':>5}{'true_mean':>11}{'pred_mean':>11}")
+    for slot, g in obs.groupby("slot"):
+        print(f"  {slot:<8}{len(g):>5}{g['true_dp_pct'].mean():>11.3f}"
+              f"{g['pred_dp_pct'].mean():>11.3f}")
+    print(f"  wrote {out}  ({len(obs)} obs)")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--sweep", action="store_true",
                    help="run the 60-spec sweep instead of the single-seed validation")
+    p.add_argument("--per-product", action="store_true",
+                   help="write per-merging-observation truth vs best-spec predicted "
+                        "%Δprice (needs the --sweep CSV); default seed output/multiple_specs/seed_0")
     p.add_argument("--seed-dir", type=Path, default=None,
                    help="seed dir (default: output/unique_spec/seed_0 single, "
                         "output/multiple_specs/seed_0 sweep)")
@@ -290,7 +361,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.sweep:
+    if args.per_product:
+        seed_dir = args.seed_dir or Path("output/multiple_specs/seed_0")
+        run_per_product(seed_dir, args.mode)
+    elif args.sweep:
         seed_dir = args.seed_dir or Path("output/multiple_specs/seed_0")
         run_sweep(seed_dir, args.mode)
     else:

@@ -1076,6 +1076,54 @@ def merger_prediction(by_spec: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-product merger analysis (38) -- reads validate_merger_prediction.py output
+# ---------------------------------------------------------------------------
+
+def merger_prediction_by_product(per_obs: pd.DataFrame) -> None:
+    """38. Per-merging-observation truth vs. best-spec predicted price increase.
+
+    Text companion to plot #38 (plot_specs.plot_merger_prediction_by_product).
+    Reads merger_prediction_by_product.csv (validate_merger_prediction.py
+    --per-product): for the best spec (rank-1 by price RMSE), the predicted and
+    true %Δprice on every merging product-market observation, summarized by the
+    four ownership slots (firm 1 ×2, firm 2 ×2).
+    """
+    _hdr('38. Per-product merger price increase: best spec vs. truth (merging obs)')
+    df = per_obs.copy()
+    spec = str(df['spec_label'].iloc[0])
+    sid = int(df['start_id'].iloc[0])
+    corr = float(np.corrcoef(df['pred_dp_pct'], df['true_dp_pct'])[0, 1])
+    rmse = float(np.sqrt(((df['pred_dp_pct'] - df['true_dp_pct']) ** 2).mean()))
+
+    print(f'  Source: best spec (rank 1 by price RMSE) = {spec}  (start {sid})')
+    print(f'  Merging observations: {len(df)}')
+    print(f'  %Δprice  true mean = {df["true_dp_pct"].mean():+.4f}   '
+          f'pred mean = {df["pred_dp_pct"].mean():+.4f}   '
+          f'mean err = {(df["pred_dp_pct"] - df["true_dp_pct"]).mean():+.4f}')
+    print(f'  %Δprice  corr(pred, true) = {corr:.4f}   RMSE = {rmse:.4f} pp')
+    print('  (differs from #37 corr_dp: that is over all products on price-LEVEL')
+    print('   changes; this is over merging obs on PERCENT changes.)')
+    print()
+    print('  The DGP redraws products each market, so the 4 merging "products" are 4')
+    print('  ownership slots of exchangeable draws -- their across-market means are')
+    print('  ~equal; the variation is across markets (see the scatter, plot #38).')
+    print()
+    header = (f'  {"slot":<8}{"firm":>5}{"n":>5}  {"true_mean":>10}{"true_std":>10}  '
+              f'{"pred_mean":>10}{"pred_std":>10}  {"err":>8}{"corr":>7}{"rmse":>8}')
+    print(header)
+    _sep(len(header))
+    for slot, g in df.groupby('slot'):
+        firm = int(g['firm_ids'].iloc[0])
+        t, p = g['true_dp_pct'], g['pred_dp_pct']
+        c = float(np.corrcoef(p, t)[0, 1]) if len(g) > 1 else float('nan')
+        r = float(np.sqrt(((p - t) ** 2).mean()))
+        print(f'  {slot:<8}{firm:>5}{len(g):>5}  {t.mean():>10.4f}{t.std():>10.4f}  '
+              f'{p.mean():>10.4f}{p.std():>10.4f}  {p.mean() - t.mean():>8.4f}'
+              f'{c:>7.3f}{r:>8.4f}')
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Cross-seed analyses (run when >=2 seeds for a given iv_mode)
 # ---------------------------------------------------------------------------
 
@@ -1302,6 +1350,15 @@ def main() -> None:
         else:
             print(f'[skip merger-prediction analysis for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --sweep first]')
+
+        # Per-product merger report (38) -- the --per-product CSV (beside specs/).
+        mpp_csv = specs_dir.parent / 'merger_prediction_by_product.csv'
+        if mpp_csv.exists():
+            _run_and_save(out_dir, '38_merger_prediction_by_product.txt',
+                          merger_prediction_by_product, pd.read_csv(mpp_csv))
+        else:
+            print(f'[skip per-product merger analysis for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --per-product first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 
