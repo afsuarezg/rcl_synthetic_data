@@ -1282,6 +1282,221 @@ def plot_merger_prediction_by_product(per_obs: pd.DataFrame, out_dir: Path) -> N
     _save(fig, out_dir, '38_merger_prediction_by_product.png')
 
 
+# Fixed slot order: firm 1's two products, then firm 2's. Any unexpected slot is
+# appended after these so the plots never silently drop a label.
+_MERGE_SLOTS = ['firm1a', 'firm1b', 'firm2a', 'firm2b']
+
+
+def _ordered_slots(slot_series: pd.Series) -> list[str]:
+    present = set(slot_series)
+    ordered = [s for s in _MERGE_SLOTS if s in present]
+    return ordered + sorted(present - set(ordered))
+
+
+def plot_merger_dp_distribution(per_obs: pd.DataFrame, out_dir: Path) -> None:
+    """39. Per-market %Δprice distribution by merging slot: true vs predicted.
+
+    Reads merger_prediction_by_product.csv. For each ownership slot (firm 1 ×2,
+    firm 2 ×2) the distribution ACROSS the 200 markets of the true counterfactual
+    %Δprice and the best spec's predicted %Δprice, as a split violin. Makes
+    visible what #38 only states numerically: the prediction is roughly right on
+    average but markedly over-dispersed (predicted sd ≈ 2× true). With persistent
+    product characteristics the slots separate by product; if the DGP redraws
+    products each market they are exchangeable draws and overlap (cf. #38).
+    """
+    from matplotlib.lines import Line2D
+
+    df = per_obs.copy()
+    df = df[np.isfinite(df['pred_dp_pct']) & np.isfinite(df['true_dp_pct'])]
+    if df.empty:
+        return
+    slots = _ordered_slots(df['slot'])
+
+    long = pd.melt(df, id_vars=['slot'], value_vars=['true_dp_pct', 'pred_dp_pct'],
+                   var_name='kind', value_name='dp_pct')
+    long['kind'] = long['kind'].map({'true_dp_pct': 'true', 'pred_dp_pct': 'predicted'})
+    col_true, col_pred = PALETTE[1], PALETTE[2]
+    pal = {'true': col_true, 'predicted': col_pred}
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.0))
+    # split violin needs both kinds present in every slot; else fall back to boxes.
+    can_split = all({'true', 'predicted'} <= set(long.loc[long['slot'] == s, 'kind'])
+                    for s in slots)
+    if can_split:
+        sns.violinplot(data=long, x='slot', y='dp_pct', hue='kind', order=slots,
+                       hue_order=['true', 'predicted'], split=True, cut=0,
+                       inner='quartile', palette=pal, ax=ax, linewidth=0.8)
+    else:
+        sns.boxplot(data=long, x='slot', y='dp_pct', hue='kind', order=slots,
+                    hue_order=['true', 'predicted'], palette=pal, ax=ax)
+
+    # True per-slot mean as a reference marker, and per-slot sd annotation.
+    means = df.groupby('slot')['true_dp_pct'].mean()
+    for i, s in enumerate(slots):
+        ax.scatter([i], [means[s]], marker='D', color=COL_REF, s=22, zorder=6,
+                   edgecolor='white', linewidth=0.6)
+    sd_lines = [f'{s}: σ_true={df.loc[df.slot == s, "true_dp_pct"].std():.2f}  '
+                f'σ_pred={df.loc[df.slot == s, "pred_dp_pct"].std():.2f}'
+                for s in slots]
+    ax.text(0.01, 0.99, '\n'.join(sd_lines), transform=ax.transAxes, ha='left',
+            va='top', fontsize=7, color=COL_REF)
+    ax.set_xlabel('ownership slot (merging firms)')
+    ax.set_ylabel('%Δprice (post-merger)')
+    ax.set_title('39. Per-market merger %Δprice distribution by slot: true vs predicted')
+    handles, _ = ax.get_legend_handles_labels()
+    handles.append(Line2D([], [], marker='D', ls='', mfc=COL_REF, mec='white',
+                          label='true mean'))
+    ax.legend(handles=handles, loc='upper right', fontsize=8, framealpha=0.9)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    _save(fig, out_dir, '39_merger_dp_distribution.png')
+
+
+def plot_merger_price_levels(per_obs: pd.DataFrame, out_dir: Path) -> None:
+    """40. Post-merger price LEVELS: predicted vs true (merging products).
+
+    Reads merger_prediction_by_product.csv. The levels analog of #38 (which is in
+    percent). Left: per (market × slot), the best spec's predicted post-merger
+    price against the true counterfactual, with a 45° perfect-prediction line.
+    Right: the price movement the merger causes -- per slot, the mean pre-merger,
+    mean true post-merger and mean predicted post-merger price (error bars =
+    ±1 sd across markets) -- showing both the size of the rise and how well the
+    model's post-merger level tracks truth.
+    """
+    df = per_obs.copy()
+    df = df[np.isfinite(df['p_pred']) & np.isfinite(df['p_true_post'])
+            & np.isfinite(df['p_pre'])]
+    if df.empty:
+        return
+    slots = _ordered_slots(df['slot'])
+    cmap = dict(zip(slots, sns.color_palette('Set2', len(slots))))
+    spec = str(df['spec_label'].iloc[0])
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(12.5, 5.4))
+
+    # Left -- 45° agreement on price levels.
+    corr = float(np.corrcoef(df['p_pred'], df['p_true_post'])[0, 1])
+    rmse = _rmse((df['p_pred'] - df['p_true_post']).to_numpy())
+    lo = float(min(df['p_true_post'].min(), df['p_pred'].min()))
+    hi = float(max(df['p_true_post'].max(), df['p_pred'].max()))
+    pad = 0.05 * (hi - lo) if hi > lo else 1.0
+    lims = (lo - pad, hi + pad)
+    axL.axline((lo, lo), (hi, hi), color=COL_REF, ls='--', lw=1.2, zorder=1,
+               label='perfect prediction (45°)')
+    for s in slots:
+        g = df[df['slot'] == s]
+        axL.scatter(g['p_true_post'], g['p_pred'], s=14, alpha=0.55,
+                    color=cmap[s], edgecolor='none', zorder=2, label=s)
+    axL.set_xlim(*lims); axL.set_ylim(*lims)
+    axL.set_aspect('equal', adjustable='box')
+    axL.set_xlabel('true post-merger price')
+    axL.set_ylabel('predicted post-merger price')
+    axL.text(0.04, 0.96, f'corr = {corr:.3f}\nRMSE = {rmse:.3f}\nn = {len(df)}',
+             transform=axL.transAxes, ha='left', va='top', fontsize=8, color=COL_REF)
+    axL.legend(loc='lower right', fontsize=8, framealpha=0.9, title='ownership slot')
+    axL.set_title('price-level agreement')
+    sns.despine(ax=axL)
+
+    # Right -- per-slot mean pre / true-post / pred-post, error bars = ±1 sd.
+    stages = [('p_pre', 'pre-merger', COL_REF),
+              ('p_true_post', 'true post', PALETTE[1]),
+              ('p_pred', 'pred post', PALETTE[2])]
+    xpos = np.arange(len(slots))
+    for j, (col, lbl, c) in enumerate(stages):
+        m = df.groupby('slot')[col].mean().reindex(slots)
+        sd = df.groupby('slot')[col].std().reindex(slots)
+        axR.errorbar(xpos + (j - 1) * 0.12, m.to_numpy(), yerr=sd.to_numpy(),
+                     fmt='o', color=c, ms=6, capsize=3, lw=1.2, label=lbl)
+    axR.set_xticks(xpos)
+    axR.set_xticklabels(slots)
+    axR.set_xlabel('ownership slot (merging firms)')
+    axR.set_ylabel('price level')
+    axR.set_title('price movement (mean ± sd across markets)')
+    axR.legend(loc='best', fontsize=8, framealpha=0.9)
+    sns.despine(ax=axR)
+
+    fig.suptitle(f'40. Post-merger price levels: predicted vs true  (best spec {spec})',
+                 fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    _save(fig, out_dir, '40_merger_price_levels.png')
+
+
+def plot_merger_vs_rivals(by_spec_long: pd.DataFrame, by_spec: pd.DataFrame,
+                          out_dir: Path) -> None:
+    """41. Merging-firm vs rival price response: predicted (per start) vs truth.
+
+    Reads merger_prediction_by_spec_long.csv (per spec-start predicted %Δprice on
+    the merging firms and on the non-merging rivals) plus the truth benchmarks in
+    merger_prediction_by_spec.csv. For each demand spec (x-axis, ranked by price
+    RMSE) every optimizer start contributes one merging point and one rival point;
+    two dashed lines mark the DGP-truth merging (≈ +2.7%) and rival (≈ 0%)
+    responses. A spec that recovers the merger reproduces the separation -- merging
+    points near the upper line, rivals near zero. Degenerate specs blow up to
+    thousands of percent and become labelled edge triangles (cf. #37), keeping the
+    well-behaved band readable.
+    """
+    from matplotlib.lines import Line2D
+
+    long = by_spec_long.copy()
+    order = [s for s in by_spec.sort_values('price_rmse')['spec_label'].tolist()
+             if s in set(long['spec_label'])]
+    if not order:
+        return
+    pos = {s: i for i, s in enumerate(order)}
+    true_m = float(by_spec['bench_true_dp_merging_pct'].iloc[0])
+    true_r = float(by_spec['bench_true_dp_nonmerging_pct'].iloc[0])
+    col_m, col_r = PALETTE[2], PALETTE[0]
+
+    # Width caps so the full 60-spec sweep stays legible; per-spec text labels
+    # only when few specs, else numeric ranks on the x-axis (cf. #37).
+    n = len(order)
+    label_specs = n <= 15
+    fig, ax = plt.subplots(figsize=(min(16.0, max(7.0, 0.5 * n + 4)), 5.0))
+
+    def _series(col, dx):
+        sub = long[long['spec_label'].isin(pos)].copy()
+        sub = sub[np.isfinite(sub[col])]
+        xs = sub['spec_label'].map(pos).to_numpy(dtype=float) + dx
+        ys = sub[col].to_numpy(dtype=float)
+        return xs.tolist(), ys.tolist()
+
+    xm, ym = _series('pred_dp_merging_pct', -0.12)
+    xr, yr = _series('pred_dp_nonmerging_pct', +0.12)
+    ax.scatter(xm, ym, s=26, color=col_m, alpha=0.75, edgecolor='white',
+               linewidth=0.4, zorder=3)
+    ax.scatter(xr, yr, s=26, color=col_r, alpha=0.75, edgecolor='white',
+               linewidth=0.4, zorder=3)
+    ax.axhline(true_m, color=col_m, ls='--', lw=1.2, zorder=2)
+    ax.axhline(true_r, color=col_r, ls='--', lw=1.2, zorder=2)
+
+    # Clip to a readable window; degenerate predictions become edge triangles.
+    _clip_with_outlier_markers(ax, xm + xr, ym + yr, orient='v',
+                               colors=[col_m] * len(xm) + [col_r] * len(xr),
+                               bounds=(-1.0, 5.0), label_rotation=90)
+
+    ax.set_xticks(range(n))
+    if label_specs:
+        ax.set_xticklabels([_abbrev(s) for s in order], rotation=30, ha='right', fontsize=7)
+        ax.set_xlabel('demand spec (ranked by price RMSE, best first)')
+    else:
+        # Too many specs for text labels: show numeric ranks (cf. #37). The text
+        # report #41 lists the spec label for each rank.
+        ax.set_xticklabels([str(i + 1) for i in range(n)], fontsize=7)
+        ax.set_xlabel('spec rank (sorted by price RMSE, best first)')
+    ax.set_ylabel('predicted %Δprice (per start)')
+    handles = [
+        Line2D([], [], marker='o', ls='', mfc=col_m, mec='white', label='merging firms'),
+        Line2D([], [], marker='o', ls='', mfc=col_r, mec='white', label='rivals (non-merging)'),
+        Line2D([], [], color=col_m, ls='--', lw=1.2, label=f'truth merging = {true_m:+.2f}%'),
+        Line2D([], [], color=col_r, ls='--', lw=1.2, label=f'truth rivals = {true_r:+.2f}%'),
+    ]
+    ax.legend(handles=handles, loc='best', fontsize=8, framealpha=0.9)
+    ax.set_title('41. Merging-firm vs rival price response: predicted (per start) vs truth')
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    _save(fig, out_dir, '41_merger_vs_rivals.png')
+
+
 # ---------------------------------------------------------------------------
 # Cross-seed plots
 # ---------------------------------------------------------------------------
@@ -1476,18 +1691,30 @@ def main() -> None:
                   f'run compute_elasticities.py first]')
 
         mp_csv = specs_dir.parent / 'merger_prediction_by_spec.csv'
-        if mp_csv.exists():
-            _safe_plot(plot_merger_prediction, pd.read_csv(mp_csv), out_dir)
+        by_spec = pd.read_csv(mp_csv) if mp_csv.exists() else None
+        if by_spec is not None:
+            _safe_plot(plot_merger_prediction, by_spec, out_dir)              # 37
         else:
             print(f'[skip merger-prediction plot for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --sweep first]')
 
         mpp_csv = specs_dir.parent / 'merger_prediction_by_product.csv'
         if mpp_csv.exists():
-            _safe_plot(plot_merger_prediction_by_product, pd.read_csv(mpp_csv), out_dir)
+            per_obs = pd.read_csv(mpp_csv)
+            _safe_plot(plot_merger_prediction_by_product, per_obs, out_dir)   # 38
+            _safe_plot(plot_merger_dp_distribution, per_obs, out_dir)         # 39
+            _safe_plot(plot_merger_price_levels, per_obs, out_dir)            # 40
         else:
-            print(f'[skip per-product merger plot for seed={seed} iv={iv_mode}: '
+            print(f'[skip per-product merger plots for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --per-product first]')
+
+        # 41 -- merging vs rivals: per-start long CSV + truth from the by_spec rollup.
+        mpl_csv = specs_dir.parent / 'merger_prediction_by_spec_long.csv'
+        if mpl_csv.exists() and by_spec is not None:
+            _safe_plot(plot_merger_vs_rivals, pd.read_csv(mpl_csv), by_spec, out_dir)
+        else:
+            print(f'[skip merging-vs-rivals plot for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --sweep first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 

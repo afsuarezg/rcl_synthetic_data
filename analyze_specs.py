@@ -1128,6 +1128,113 @@ def merger_prediction_by_product(per_obs: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Merger price-behavior detail (39-41) -- read validate_merger_prediction.py output
+# ---------------------------------------------------------------------------
+
+def merger_dp_distribution(per_obs: pd.DataFrame) -> None:
+    """39. Per-market %Δprice spread by merging slot: true vs predicted.
+
+    Text companion to plot #39. Reads merger_prediction_by_product.csv. Per slot,
+    the sd of the true vs predicted %Δprice ACROSS markets, their ratio, and the
+    share of markets where the prediction overshoots the truth -- quantifying the
+    over-dispersion #38 flags (predicted spread markedly wider than true).
+    """
+    _hdr('39. Per-market merger %Δprice spread by slot: true vs predicted')
+    df = per_obs.copy()
+    print(f'  Source: best spec (rank 1 by price RMSE) = {df["spec_label"].iloc[0]}')
+    print('  σ = sd across markets;  σ-ratio = σ_pred / σ_true;')
+    print('  overshoot = share of markets where pred %Δp > true %Δp.')
+    print()
+    header = (f'  {"slot":<8}{"firm":>5}{"n":>6}  {"σ_true":>9}{"σ_pred":>9}'
+              f'{"σ_ratio":>9}  {"overshoot":>10}')
+    print(header)
+    _sep(len(header))
+    for slot, g in df.groupby('slot'):
+        firm = int(g['firm_ids'].iloc[0])
+        st, sp = float(g['true_dp_pct'].std()), float(g['pred_dp_pct'].std())
+        ratio = sp / st if st else float('nan')
+        over = float((g['pred_dp_pct'] > g['true_dp_pct']).mean())
+        print(f'  {slot:<8}{firm:>5}{len(g):>6}  {st:>9.4f}{sp:>9.4f}{ratio:>9.2f}  '
+              f'{over:>10.2%}')
+    st, sp = float(df['true_dp_pct'].std()), float(df['pred_dp_pct'].std())
+    print()
+    print(f'  Overall: σ_true={st:.4f}  σ_pred={sp:.4f}  '
+          f'σ_ratio={sp / st:.2f}' if st else '  Overall: σ_true=0')
+    print()
+
+
+def merger_price_levels(per_obs: pd.DataFrame) -> None:
+    """40. Post-merger price LEVELS by slot: predicted vs true.
+
+    Text companion to plot #40. Reads merger_prediction_by_product.csv. Per slot,
+    the mean pre-merger, true post-merger and predicted post-merger price LEVELS
+    (not percentages), the implied true vs predicted price rise, and the mean
+    predicted-minus-true level error.
+    """
+    _hdr('40. Post-merger price levels by slot: predicted vs true (merging obs)')
+    df = per_obs.copy()
+    corr = float(np.corrcoef(df['p_pred'], df['p_true_post'])[0, 1])
+    rmse = float(np.sqrt(((df['p_pred'] - df['p_true_post']) ** 2).mean()))
+    print(f'  Source: best spec (rank 1 by price RMSE) = {df["spec_label"].iloc[0]}')
+    print(f'  Price LEVELS (not %): corr(pred_post, true_post) = {corr:.4f}   '
+          f'RMSE = {rmse:.4f}')
+    print(f'  mean level error (pred_post - true_post) = '
+          f'{(df["p_pred"] - df["p_true_post"]).mean():+.4f}')
+    print()
+    header = (f'  {"slot":<8}{"firm":>5}{"n":>6}  {"pre":>9}{"true_post":>11}'
+              f'{"pred_post":>11}  {"true_rise":>10}{"pred_rise":>10}  {"lvl_err":>9}')
+    print(header)
+    _sep(len(header))
+    for slot, g in df.groupby('slot'):
+        firm = int(g['firm_ids'].iloc[0])
+        pre, tp, pp = g['p_pre'].mean(), g['p_true_post'].mean(), g['p_pred'].mean()
+        print(f'  {slot:<8}{firm:>5}{len(g):>6}  {pre:>9.4f}{tp:>11.4f}{pp:>11.4f}  '
+              f'{tp - pre:>10.4f}{pp - pre:>10.4f}  {pp - tp:>9.4f}')
+    print()
+
+
+def merger_vs_rivals(by_spec_long: pd.DataFrame, by_spec: pd.DataFrame) -> None:
+    """41. Merging-firm vs rival price response: predicted vs truth, per spec.
+
+    Text companion to plot #41. Reads merger_prediction_by_spec_long.csv (per
+    spec-start) and the truth benchmarks in merger_prediction_by_spec.csv. For
+    each spec's best start, the predicted %Δprice on the merging firms vs the
+    non-merging rivals against the two truth values, with a flag for specs that
+    fail to separate the two (a recovered merger raises merging-firm prices well
+    above the near-zero rival response).
+    """
+    _hdr('41. Merging-firm vs rival price response: predicted vs truth (per spec)')
+    longdf = by_spec_long.copy()
+    true_m = float(by_spec['bench_true_dp_merging_pct'].iloc[0])
+    true_r = float(by_spec['bench_true_dp_nonmerging_pct'].iloc[0])
+    print(f'  Truth: merging = {true_m:+.4f}%   rivals = {true_r:+.4f}%   '
+          f'(separation = {true_m - true_r:+.4f} pp)')
+    print('  Per spec (ranked by price RMSE): best start predicted merging vs rival %Δprice.')
+    print('  separates = pred_merge > pred_rival AND |pred_rival| < |pred_merge|.')
+    print()
+    # Robustly select the best start per spec (is_best may be bool or "True"/"False").
+    ib = longdf['is_best']
+    if ib.dtype == object:
+        ib = ib.astype(str).str.strip().str.lower().isin(['true', '1'])
+    best = longdf[ib.astype(bool)]
+    bymap = {r['spec_label']: r for _, r in best.iterrows()}
+    order = by_spec.sort_values('price_rmse')['spec_label'].tolist()
+    header = (f'  {"rank":>4}  {"pred_merge%":>12}{"pred_rival%":>12}  '
+              f'{"separates":>10}  Specification')
+    print(header)
+    _sep(len(header))
+    for i, spec in enumerate(order):
+        r = bymap.get(spec)
+        if r is None:
+            continue
+        pm, pr = float(r['pred_dp_merging_pct']), float(r['pred_dp_nonmerging_pct'])
+        sep = ('YES' if (np.isfinite(pm) and np.isfinite(pr)
+                         and pm > pr and abs(pr) < abs(pm)) else '')
+        print(f'  {i + 1:>4}  {pm:>12.3f}{pr:>12.3f}  {sep:>10}  {spec}')
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Cross-seed analyses (run when >=2 seeds for a given iv_mode)
 # ---------------------------------------------------------------------------
 
@@ -1348,21 +1455,36 @@ def main() -> None:
         # Merger-prediction report (37) -- separate dependency: the sweep CSV,
         # produced by validate_merger_prediction.py --sweep (sits beside specs/).
         mp_csv = specs_dir.parent / 'merger_prediction_by_spec.csv'
-        if mp_csv.exists():
+        by_spec = pd.read_csv(mp_csv) if mp_csv.exists() else None
+        if by_spec is not None:
             _run_and_save(out_dir, '37_merger_prediction.txt',
-                          merger_prediction, pd.read_csv(mp_csv))
+                          merger_prediction, by_spec)
         else:
             print(f'[skip merger-prediction analysis for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --sweep first]')
 
-        # Per-product merger report (38) -- the --per-product CSV (beside specs/).
+        # Per-product merger reports (38-40) -- the --per-product CSV (beside specs/).
         mpp_csv = specs_dir.parent / 'merger_prediction_by_product.csv'
         if mpp_csv.exists():
+            per_obs = pd.read_csv(mpp_csv)
             _run_and_save(out_dir, '38_merger_prediction_by_product.txt',
-                          merger_prediction_by_product, pd.read_csv(mpp_csv))
+                          merger_prediction_by_product, per_obs)
+            _run_and_save(out_dir, '39_merger_dp_distribution.txt',
+                          merger_dp_distribution, per_obs)
+            _run_and_save(out_dir, '40_merger_price_levels.txt',
+                          merger_price_levels, per_obs)
         else:
-            print(f'[skip per-product merger analysis for seed={seed} iv={iv_mode}: '
+            print(f'[skip per-product merger analyses for seed={seed} iv={iv_mode}: '
                   f'run validate_merger_prediction.py --per-product first]')
+
+        # Merging-vs-rivals report (41) -- per-start long CSV + truth from by_spec.
+        mpl_csv = specs_dir.parent / 'merger_prediction_by_spec_long.csv'
+        if mpl_csv.exists() and by_spec is not None:
+            _run_and_save(out_dir, '41_merger_vs_rivals.txt',
+                          merger_vs_rivals, pd.read_csv(mpl_csv), by_spec)
+        else:
+            print(f'[skip merging-vs-rivals analysis for seed={seed} iv={iv_mode}: '
+                  f'run validate_merger_prediction.py --sweep first]')
 
         per_iv.setdefault(iv_mode, {})[seed] = df
 
