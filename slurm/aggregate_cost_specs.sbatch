@@ -37,6 +37,12 @@ if [ ! -f pyproject.toml ]; then
     exit 1
 fi
 
+# Sherlock's system /usr/bin/gcc (4.8.5) ships a libstdc++ that lacks
+# GLIBCXX_3.4.20, which pandas' compiled extensions require at import time.
+# Load a modern GCC via Lmod so its newer libstdc++ is on the library path
+# (same line as main_job.sh / postprocess.sbatch).
+ml gcc/12.4.0 2>/dev/null || ml gcc/10.1.0 2>/dev/null || ml gcc
+
 uv sync --quiet
 
 SEED_DIR="output/multiple_specs_cost/seed_0"
