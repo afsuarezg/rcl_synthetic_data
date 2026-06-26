@@ -21,10 +21,11 @@
 #     run whatever code is at PROJECT_DIR — they do NOT force a git checkout.
 #   - The DGP inputs must already exist (run prep_cost_specs.sbatch first).
 #
-# To RAISE N_STARTS on a later submission, first clear the per-spec summaries so
-# run_specs re-dispatches (estimate.py then resumes existing start_*.pkl and runs
-# only the new ones — same mechanism as main_job.sh):
-#   find output/multiple_specs_cost/seed_0/iv_both/specs -name estimates_summary.csv -delete
+# To RAISE N_STARTS on a later submission, just resubmit with the higher value —
+# run_specs is count-aware: it skips a spec only when it already has >= N_STARTS
+# solved start_*.pkl, otherwise it hands the spec to estimate.py, which resumes
+# the existing pickles and runs only the missing starts. No need to delete the
+# per-spec estimates_summary.csv first.
 
 #SBATCH --job-name=cost-specs
 #SBATCH --array=0-59

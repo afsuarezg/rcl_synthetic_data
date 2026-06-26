@@ -158,11 +158,14 @@ Notable differences from the array path above:
 | Headers | `--cpus-per-task=4`, `--mem=8G`, `--time=02:00:00` per task | `-c 4`, `--mem=16GB`, `--time=24:00:00` for the whole sweep |
 | Logs | `slurm/logs/spec_${JOBID}_<idx>.{out,err}` | `slurm/logs/blp_specs.${JOBID}.{out,err}` |
 
-`slurm/main_job.sh` is also fully resume-friendly: every spec it would
-otherwise solve checks for an existing `estimates_summary.csv` first and
-skips if present, and inside each spec, `estimate.py` skips any per-start
-pickle that already exists. So re-submitting the same job after a partial
-run just fills in whatever is missing.
+`slurm/main_job.sh` is also fully resume-friendly: `run_specs.py` is
+count-aware — it skips a spec only when that spec already has at least
+`--n-starts` solved per-start pickles *and* its `estimates_summary.csv`
+exists; otherwise it hands the spec to `estimate.py`, which resumes the
+existing `start_NN.pkl` and runs only the missing starts. So re-submitting
+the same job after a partial run fills in whatever is missing, and
+re-submitting with a higher `--n-starts` tops every spec up (no need to
+delete summaries first).
 
 Outputs land under
 `/oak/stanford/groups/polinsky/rcl_synthetic_data/output/seed_0/iv_both/specs/`
@@ -245,10 +248,10 @@ rsync -avz \
   ```bash
   sbatch --array=14,37 slurm/run_specs.sbatch
   ```
-  The resume logic in both `run_specs.py` (skips specs whose summary CSV
-  exists) and `estimate.py` (skips per-start pickles that exist) means
-  re-running is safe — successful work is reused, only the missing pieces
-  are recomputed.
+  The resume logic in both `run_specs.py` (skips a spec only when it has
+  `>= --n-starts` solved pickles and a summary on disk) and `estimate.py`
+  (skips per-start pickles that exist) means re-running is safe — successful
+  work is reused, only the missing pieces are recomputed.
 - **Want to add another seed.** Simulate it first
   (`uv run python simulate.py --seed N`), then edit `--seed 0` → `--seed N`
   in both sbatch scripts and re-submit. Outputs land under

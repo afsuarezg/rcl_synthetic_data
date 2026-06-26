@@ -18,12 +18,17 @@ Designed for both a SLURM job array on Sherlock and local sanity tests:
   # aggregate finished spec dirs into specs_summary_{long,best}.csv
   uv run python run_specs.py --seed 0 --aggregate-only
 
-Resume is automatic: any spec that already has estimates_summary.csv on disk
-is skipped (matching estimate.py's per-start resume on the inside).
+Resume is count-aware: a spec is skipped only when it already has at least
+--n-starts solved starts (start_NN.pkl on disk) AND its estimates_summary.csv
+exists. Otherwise it is handed to estimate.py, which resumes the existing
+pickles and runs only the missing starts, then rewrites the summary. So
+re-running with a higher --n-starts just tops each spec up — no need to delete
+summaries first.
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import itertools
 import json
 import os
@@ -149,9 +154,24 @@ def dispatch_one(args: argparse.Namespace, idx: int) -> int:
     label = spec_label(x2, demos, cost)
     sdir = spec_dir(args, label)
     summary_path = os.path.join(sdir, "estimates_summary.csv")
-    if os.path.exists(summary_path):
-        print(f"[skip] spec {idx} ({label}): summary exists at {summary_path}")
+    # Count-aware resume: per-start pickles are estimate.py's resume source (a
+    # failed start writes none), so this is exactly the set it will skip-resume.
+    # Fast-skip only when the spec already has >= n_starts solved AND its summary
+    # is on disk; otherwise hand off to estimate.py, which resumes existing
+    # pickles and runs only the missing indices, then (re)writes the summary.
+    n_done = len(glob.glob(os.path.join(sdir, "estimates", "start_*.pkl")))
+    if n_done >= args.n_starts and os.path.exists(summary_path):
+        print(f"[skip] spec {idx} ({label}): {n_done} starts solved "
+              f">= n_starts={args.n_starts}, summary present")
         return 0
+    if n_done >= args.n_starts:
+        # Enough starts solved but the summary is missing: estimate.py reloads
+        # the pickles (no re-solve) and rewrites estimates_summary.csv.
+        print(f"[resume] spec {idx} ({label}): {n_done} starts on disk, "
+              f"rebuilding missing summary")
+    elif n_done:
+        print(f"[resume] spec {idx} ({label}): {n_done} starts on disk, "
+              f"topping up to {args.n_starts}")
 
     here = os.path.dirname(os.path.abspath(__file__))
     cmd: list[str]

@@ -287,6 +287,15 @@ def main() -> None:
     estimates_dir = os.path.join(variant_dir, "estimates")
     os.makedirs(estimates_dir, exist_ok=True)
 
+    # Drop any existing summary up front: the per-start pickles are the durable
+    # resume source, and we rewrite the summary from all of them at the end. If
+    # this run is killed mid-way, leaving no summary is the safe state — the
+    # next run sees it absent and rebuilds, rather than trusting a stale one
+    # that predates the pickles just added (run_specs.py's resume gate).
+    stale_summary = os.path.join(variant_dir, "estimates_summary.csv")
+    if os.path.exists(stale_summary):
+        os.remove(stale_summary)
+
     if spec_mode:
         # Build the truth-projected (sigma, pi) init for this spec's shape.
         # Truth-params dictionary is keyed by the spec's own parameter indices
