@@ -16,9 +16,9 @@
 # (Drop the --export to use the default 5-start validation run.)
 #
 # Preconditions:
-#   - The checkout you submit from must contain the --grid cube code
-#     (commit 7904265 on add-solve-diagnostics): these scripts run whatever is
-#     at $SLURM_SUBMIT_DIR — they do NOT force a git checkout.
+#   - PROJECT_DIR (default: the OAK clone) must be a checkout containing the
+#     --grid cube code (commit 7904265 on add-solve-diagnostics). These scripts
+#     run whatever code is at PROJECT_DIR — they do NOT force a git checkout.
 #   - The DGP inputs must already exist (run prep_cost_specs.sbatch first).
 #
 # To RAISE N_STARTS on a later submission, first clear the per-spec summaries so
@@ -37,8 +37,14 @@
 set -euo pipefail
 mkdir -p slurm/logs
 
-# Move to the repo root (the dir that contains run_specs.py and pyproject.toml).
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+# Move to the repo root. Defaults to the OAK clone (as in main_job.sh /
+# postprocess.sbatch); override with --export=ALL,PROJECT_DIR=/path/to/repo.
+PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
+cd "$PROJECT_DIR" || { echo "ERROR: PROJECT_DIR=$PROJECT_DIR not found" >&2; exit 1; }
+if [ ! -f pyproject.toml ]; then
+    echo "ERROR: no pyproject.toml in $PWD — set PROJECT_DIR to the repo root." >&2
+    exit 1
+fi
 
 # `uv sync` materialises .venv/ from pyproject.toml + uv.lock. Idempotent;
 # safe to run inside every array task (no-ops after the first one).

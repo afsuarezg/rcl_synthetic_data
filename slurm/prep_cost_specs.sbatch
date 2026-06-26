@@ -22,8 +22,14 @@
 set -euo pipefail
 mkdir -p slurm/logs
 
-# Move to the repo root (the dir that contains simulate.py and pyproject.toml).
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+# Move to the repo root. Defaults to the OAK clone (as in main_job.sh /
+# postprocess.sbatch); override with --export=ALL,PROJECT_DIR=/path/to/repo.
+PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
+cd "$PROJECT_DIR" || { echo "ERROR: PROJECT_DIR=$PROJECT_DIR not found" >&2; exit 1; }
+if [ ! -f pyproject.toml ]; then
+    echo "ERROR: no pyproject.toml in $PWD — set PROJECT_DIR to the repo root." >&2
+    exit 1
+fi
 
 # `uv sync` materialises .venv/ from pyproject.toml + uv.lock. Idempotent.
 uv sync --quiet
