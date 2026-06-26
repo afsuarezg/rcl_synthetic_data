@@ -7,16 +7,24 @@
 #
 # Pipeline (each step's inputs come from earlier steps):
 #   1. run_specs --aggregate-only  -> specs_summary_{long,best}.csv (with cost_vars)
-#   2. validate_merger_prediction  -> merger_prediction_by_spec / by_product CSVs
-#   3. analyze_specs / plot_specs   -> text reports + figures (incl. merger #37/#38,
-#                                      which need step 2's CSVs)
-#   4. compute_elasticities         -> per-spec elasticity/markup/HHI .txt + .png
+#   2. compute_elasticities         -> elasticities_detail.csv + post_estimation_summary.csv
+#   3. validate_merger_prediction  -> merger_prediction_by_spec / by_product CSVs
+#   4. analyze_specs / plot_specs   -> ALL NN_*.txt + NN_*.png, including the
+#                                      elasticity reports 20-35 (read step 2's CSVs)
+#                                      and the merger reports #37/#38 (read step 3's)
 #
-# Steps 2 and 4 read the per-spec start_*.pkl ProblemResults directly and are the
-# expensive ones (step 4 touches EVERY pickle = 60 specs x N starts). They are
-# guarded so a failure/timeout there does not block the essential recovery
-# outputs (steps 1+3); compute_elasticities skips finished specs on a re-run
-# (no --force), so re-submitting this job resumes it.
+# ORDER MATTERS. analyze_specs/plot_specs (step 4) write reports 20-35 from the
+# elasticity CSVs and 37/38 from the merger CSVs, so both producers (steps 2 and 3)
+# must run BEFORE step 4 -- otherwise those reports are silently skipped on the
+# first pass (they only appear on a re-submission, once the CSVs exist).
+#
+# Steps 2 and 3 read the per-spec start_*.pkl ProblemResults directly and are the
+# expensive ones (step 2 touches EVERY pickle = 60 specs x N starts). Both are
+# guarded so a failure/timeout there does NOT block step 4: analyze_specs/plot_specs
+# still run and emit every report whose inputs exist -- an elasticity timeout costs
+# only reports 20-35, not the recovery reports 01-15 or merger 37/38.
+# compute_elasticities skips finished specs on a re-run (no --force), so
+# re-submitting this job resumes it and fills in any reports missed on a timeout.
 
 #SBATCH --job-name=cost-specs-agg
 #SBATCH --time=12:00:00
@@ -57,23 +65,29 @@ uv run python run_specs.py \
     --iv-mode both \
     --aggregate-only
 
-# 2. Merger counterfactual (reads best-spec pickles; needs the rollup from step 1).
-#    Guarded: a failure here must not block the recovery analysis in step 3.
-echo "[$(date -Iseconds)] (2/4) merger validation (sweep + per-product)"
+# 2. Elasticities + per-spec post-estimation (reads EVERY pickle; slowest step).
+#    Must run BEFORE analyze_specs/plot_specs, which read these CSVs for reports
+#    20-35. Guarded + resumable: a timeout doesn't block step 4 (it just loses
+#    20-35); re-submitting this job resumes it (skips specs whose outputs exist).
+echo "[$(date -Iseconds)] (2/4) elasticities + post-estimation (slow)"
+uv run python compute_elasticities.py --root "$ROOT" \
+    || echo "WARNING: compute_elasticities failed/timed out (rc=$?); re-run this job to resume"
+
+# 3. Merger counterfactual (reads best-spec pickles; needs the rollup from step 1).
+#    Produces the CSVs that analyze_specs/plot_specs turn into reports 37/38.
+#    Guarded: a failure here must not block the recovery analysis in step 4.
+echo "[$(date -Iseconds)] (3/4) merger validation (sweep + per-product)"
 uv run python validate_merger_prediction.py --sweep       --seed-dir "$SEED_DIR" --mode iv_both \
     || echo "WARNING: validate_merger_prediction --sweep failed (rc=$?); continuing"
 uv run python validate_merger_prediction.py --per-product --seed-dir "$SEED_DIR" --mode iv_both \
     || echo "WARNING: validate_merger_prediction --per-product failed (rc=$?); continuing"
 
-# 3. Essential recovery analysis (CSV-only; reads the rollup + any merger CSVs).
-echo "[$(date -Iseconds)] (3/4) text reports + figures"
+# 4. Text reports + figures. Reads the rollup (step 1), the elasticity CSVs
+#    (step 2) and the merger CSVs (step 3); emits every NN_*.txt + NN_*.png whose
+#    inputs exist. Reports 20-35 appear only if step 2 succeeded, 37/38 only if
+#    step 3 did -- the rest (01-15) always.
+echo "[$(date -Iseconds)] (4/4) text reports + figures"
 uv run python analyze_specs.py --root "$ROOT" --basin-threshold 2.0
 uv run python plot_specs.py    --root "$ROOT"
-
-# 4. Elasticities + per-spec merger sim (reads EVERY pickle; slowest). Guarded and
-#    resumable: re-run this job to continue (it skips specs whose outputs exist).
-echo "[$(date -Iseconds)] (4/4) elasticities + merger sim (slow)"
-uv run python compute_elasticities.py --root "$ROOT" \
-    || echo "WARNING: compute_elasticities failed/timed out (rc=$?); re-run this job to resume"
 
 echo "[$(date -Iseconds)] done"
