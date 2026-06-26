@@ -70,7 +70,7 @@ def _term_label(term: str) -> str:
 
 
 def _load_spec_formulas(specs_dir: Path) -> dict[str, dict]:
-    """Return {spec_label: {'x2_terms': [...], 'demo_terms': [...]}}."""
+    """Return {spec_label: {'x2_terms', 'demo_terms', 'cost_terms'}}."""
     out: dict[str, dict] = {}
     for spec_dir in specs_dir.glob('spec_*'):
         spec_label = spec_dir.name[len('spec_'):]
@@ -78,21 +78,29 @@ def _load_spec_formulas(specs_dir: Path) -> dict[str, dict]:
             s = json.load(f)
         x2 = [_term_label(t) for t in _parse_formula(s['x2_formula'])]
         demo = [_term_label(t) for t in _parse_formula(s['agent_formula'], drop_zero=True)]
-        out[spec_label] = {'x2_terms': x2, 'demo_terms': demo}
+        # x3_formula records the supply (marginal-cost) terms. Older spec.json
+        # files (demand-only sweeps) predate it and use truth's full supply set.
+        x3_formula = s.get('x3_formula', '1 + x1 + x2 + w1 + w2')
+        cost = [_term_label(t) for t in _parse_formula(x3_formula)]
+        out[spec_label] = {'x2_terms': x2, 'demo_terms': demo, 'cost_terms': cost}
     return out
 
 
 _SIGMA_RE = re.compile(r'^sigma_(\d+)_(\d+)$')
 _PI_RE    = re.compile(r'^pi_(\d+)_(\d+)$')
+_GAMMA_RE = re.compile(r'^gamma_(\d+)$')
 
 
-def _physical_name(param_name: str, x2_terms: list[str], demo_terms: list[str]) -> str:
+def _physical_name(param_name: str, x2_terms: list[str], demo_terms: list[str],
+                   cost_terms: list[str]) -> str:
     """Map a positional param_name to a spec-invariant physical name.
 
     Examples:
       sigma_2_2, x2_terms=['const','prices','x1','x2']  -> 'sigma_x1'
       pi_1_0,   x2_terms=[...,'prices',...], demo=['income']  -> 'pi_prices_income'
-      beta_1, gamma_0  -> unchanged
+      gamma_3,  cost_terms=['const','x1','x2','w1','w2']  -> 'gamma_w1'
+      gamma_3,  cost_terms=['const','x1','x2','w2']       -> 'gamma_w2'  (w1 dropped)
+      beta_1  -> unchanged
     """
     m = _SIGMA_RE.match(param_name)
     if m:
@@ -105,6 +113,14 @@ def _physical_name(param_name: str, x2_terms: list[str], demo_terms: list[str]) 
         i, j = int(m.group(1)), int(m.group(2))
         if 0 <= i < len(x2_terms) and 0 <= j < len(demo_terms):
             return f'pi_{x2_terms[i]}_{demo_terms[j]}'
+        return param_name
+    m = _GAMMA_RE.match(param_name)
+    if m:
+        # Cost-shifter subsetting can move w1/w2 between gamma slots, so resolve
+        # gamma to its physical cost term — keeps cross-spec aggregation honest.
+        i = int(m.group(1))
+        if 0 <= i < len(cost_terms):
+            return f'gamma_{cost_terms[i]}'
         return param_name
     return param_name
 
@@ -124,7 +140,8 @@ def load_long(specs_dir: Path) -> pd.DataFrame:
         f = formulas.get(row['spec_label'])
         if f is None:
             return row['param_name']
-        return _physical_name(row['param_name'], f['x2_terms'], f['demo_terms'])
+        return _physical_name(row['param_name'], f['x2_terms'], f['demo_terms'],
+                              f['cost_terms'])
     df['param_physical'] = df.apply(_phys, axis=1)
     # n_x2 / n_demos help group-by analyses
     df['n_x2'] = df['x2_vars'].fillna('').astype(str).apply(

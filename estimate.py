@@ -51,6 +51,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--demos-vars", type=str, default=None,
                    help="comma-separated subset of {income, age, hh_size, education} "
                         "for the agent formulation. Enables spec mode when set.")
+    p.add_argument("--cost-vars", type=str, default=None,
+                   help="comma-separated subset of {w1, w2} for the supply (marginal-"
+                        "cost) formulation, which is always '1 + x1 + x2 + <cost-vars>'. "
+                        "Unset => both (truth). Enables spec mode when set.")
     p.add_argument("--spec-label", type=str, default=None,
                    help="when in spec mode, output goes to "
                         "<output-dir>/iv_<mode>/specs/spec_<label>/ instead of "
@@ -64,6 +68,7 @@ def parse_args() -> argparse.Namespace:
 # assume.
 _ALL_X2_VARS = ["x1", "x2", "x3", "x4", "x5"]
 _ALL_DEMOS = ["income", "age", "hh_size", "education"]
+_ALL_COST_VARS = ["w1", "w2"]
 
 
 def parse_var_list(spec: str | None, allowed: list[str], label: str) -> list[str] | None:
@@ -112,6 +117,22 @@ def project_truth_for_spec(truth: dict, x2_vars: list[str], demo_vars: list[str]
             t_d = truth_demo_order.index(demo_name)
             pi_init[k, d] = float(truth["pi"][t_k, t_d])
     return sigma_init, pi_init
+
+
+def project_truth_gamma_for_spec(truth: dict, cost_vars: list[str]) -> np.ndarray:
+    """Return truth's gamma reshaped to this spec's supply (X3) columns.
+
+    The supply formula keeps 'const, x1, x2' fixed and uses the chosen subset of
+    {w1, w2}, so the spec's gamma is shorter than truth's when a cost shifter is
+    dropped. gamma is concentrated out in solve(), so this is only used to align
+    truth with estimates for abs_error reporting (it is *not* a starting value).
+    When cost_vars == ['w1', 'w2'] this returns the full truth gamma unchanged.
+    """
+    # Truth's X3 column order (must match simulate.py): const, x1, x2, w1, w2.
+    truth_x3_order = ["const", "x1", "x2", "w1", "w2"]
+    spec_x3_order = ["const", "x1", "x2"] + cost_vars
+    gamma = np.asarray(truth["gamma"]).flatten()
+    return np.array([gamma[truth_x3_order.index(name)] for name in spec_x3_order])
 
 
 def dense_perturb(rng: np.random.Generator, x: np.ndarray, scale: float = 0.5,
@@ -197,14 +218,22 @@ def main() -> None:
     # goes under a per-spec subdir so the canonical iv_<mode>/ run is preserved.
     x2_vars = parse_var_list(args.x2_vars, _ALL_X2_VARS, "--x2-vars")
     demo_vars = parse_var_list(args.demos_vars, _ALL_DEMOS, "--demos-vars")
-    spec_mode = (x2_vars is not None) or (demo_vars is not None)
+    cost_vars = parse_var_list(args.cost_vars, _ALL_COST_VARS, "--cost-vars")
+    spec_mode = (x2_vars is not None) or (demo_vars is not None) or (cost_vars is not None)
     if spec_mode:
-        # Defaults if only one of the two is supplied: fall back to truth's full set.
+        # Defaults if only some are supplied: fall back to truth's full set.
         x2_vars = x2_vars if x2_vars is not None else ["x1", "x2", "x3"]
         demo_vars = demo_vars if demo_vars is not None else list(_ALL_DEMOS)
+        cost_vars = cost_vars if cost_vars is not None else list(_ALL_COST_VARS)
         if args.spec_label is None:
-            args.spec_label = f"x2-{'_'.join(x2_vars)}__demos-{'_'.join(demo_vars)}"
-        print(f"spec-mode: x2_vars={x2_vars}  demos={demo_vars}  label={args.spec_label}")
+            label = f"x2-{'_'.join(x2_vars)}__demos-{'_'.join(demo_vars)}"
+            # Only tag the cost axis when it deviates from truth, so demand-only
+            # specs keep their historical labels byte-identical.
+            if cost_vars != list(_ALL_COST_VARS):
+                label += f"__cost-{'_'.join(cost_vars)}"
+            args.spec_label = label
+        print(f"spec-mode: x2_vars={x2_vars}  demos={demo_vars}  cost={cost_vars}  "
+              f"label={args.spec_label}")
 
     variant_dir = os.path.join(output_dir, f"iv_{args.iv_mode}")
     if spec_mode:
@@ -214,21 +243,25 @@ def main() -> None:
     if spec_mode:
         x2_formula = "1 + prices + " + " + ".join(x2_vars)
         agent_formula_str = "0 + " + " + ".join(demo_vars)
+        x3_formula = "1 + x1 + x2 + " + " + ".join(cost_vars)
         # Persist the spec definition next to the outputs.
         import json
         with open(os.path.join(variant_dir, "spec.json"), "w") as fh:
             json.dump({"x2_vars": x2_vars, "demo_vars": demo_vars,
+                       "cost_vars": cost_vars,
                        "iv_mode": args.iv_mode, "n_starts": args.n_starts,
                        "x2_formula": x2_formula,
-                       "agent_formula": agent_formula_str}, fh, indent=2)
+                       "agent_formula": agent_formula_str,
+                       "x3_formula": x3_formula}, fh, indent=2)
     else:
         x2_formula = "1 + prices + x1 + x2 + x3"
         agent_formula_str = "0 + income + age + hh_size + education"
+        x3_formula = "1 + x1 + x2 + w1 + w2"
 
     product_formulations = (
         pyblp.Formulation("1 + prices + x1 + x2 + x3 + x4 + x5"),
         pyblp.Formulation(x2_formula),
-        pyblp.Formulation("1 + x1 + x2 + w1 + w2"),
+        pyblp.Formulation(x3_formula),
     )
     agent_formulation = pyblp.Formulation(agent_formula_str)
 
@@ -261,8 +294,9 @@ def main() -> None:
         sigma_truth_proj, pi_truth_proj = project_truth_for_spec(
             truth, x2_vars, demo_vars,
         )
+        gamma_truth_proj = project_truth_gamma_for_spec(truth, cost_vars)
         truth_params = flatten_params(sigma_truth_proj, pi_truth_proj,
-                                      truth["beta"], truth["gamma"])
+                                      truth["beta"], gamma_truth_proj)
     else:
         truth_params = flatten_params(truth["sigma"], truth["pi"],
                                       truth["beta"], truth["gamma"])

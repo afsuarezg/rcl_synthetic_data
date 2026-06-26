@@ -46,20 +46,54 @@ _DEMOS = ["income", "age", "hh_size", "education"]
 DEMO_SUBSETS: list[list[str]] = [
     list(s) for r in range(1, len(_DEMOS) + 1) for s in itertools.combinations(_DEMOS, r)
 ]
-# Total = 4 * 15 = 60.
-SPECS: list[tuple[list[str], list[str]]] = [
-    (x2, demos) for x2 in X2_SUBSETS for demos in DEMO_SUBSETS
-]
+# Total = 4 * 15 = 60 (the historical --grid full).
+
+# All/all-minus-one subsets for the --grid cube experiment: the full set plus
+# every leave-one-out. Keeps the experiment balanced across the three axes
+# instead of exploding the demographic dimension.
+DEMO_SUBSETS_AMO: list[list[str]] = (
+    [list(_DEMOS)] + [[d for d in _DEMOS if d != drop] for drop in _DEMOS]
+)  # 1 + 4 = 5
+
+_COSTS = ["w1", "w2"]
+COST_SUBSETS_AMO: list[list[str]] = (
+    [list(_COSTS)] + [[c for c in _COSTS if c != drop] for drop in _COSTS]
+)  # 1 + 2 = 3:  {w1,w2}, {w2}, {w1}
 
 
-def spec_label(x2: list[str], demos: list[str]) -> str:
-    return f"x2-{'_'.join(x2)}__demos-{'_'.join(demos)}"
+def build_specs(grid: str) -> list:
+    """Enumerate the spec grid as (x2_vars, demo_vars, cost_vars) triples.
+
+    full -- 4 X2 x 15 demos = 60 demand-only specs (cost_vars=None: supply formula
+            stays at truth, no --cost-vars passed). Identical to the historical
+            grid, so SLURM array indices are preserved.
+    cube -- 4 X2 x 5 demos x 3 cost = 60 specs, all/all-minus-one on every axis.
+    """
+    if grid == "full":
+        return [(x2, demos, None) for x2 in X2_SUBSETS for demos in DEMO_SUBSETS]
+    if grid == "cube":
+        return [(x2, demos, cost)
+                for x2 in X2_SUBSETS
+                for demos in DEMO_SUBSETS_AMO
+                for cost in COST_SUBSETS_AMO]
+    raise ValueError(f"unknown grid {grid!r}")
+
+
+def spec_label(x2: list[str], demos: list[str], cost: list[str] | None = None) -> str:
+    label = f"x2-{'_'.join(x2)}__demos-{'_'.join(demos)}"
+    if cost is not None:
+        label += f"__cost-{'_'.join(cost)}"
+    return label
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--iv-mode", choices=["both", "diff_only"], default="both")
+    p.add_argument("--grid", choices=["full", "cube"], default="full",
+                   help="full = 4 X2 x 15 demos (historical, demand-only); "
+                        "cube = 4 X2 x 5 demos x 3 cost-shifter subsets "
+                        "(all/all-minus-one on every axis = 60 specs).")
     p.add_argument("--n-starts", type=int, default=5,
                    help="multistarts per spec (passed through to estimate.py)")
     p.add_argument("--output-dir", type=str, default=None,
@@ -95,21 +129,24 @@ def spec_dir(args: argparse.Namespace, label: str) -> str:
                         f"spec_{label}")
 
 
-def cmd_list() -> int:
-    print(f"{'idx':>3}  {'X2':<14}  demos")
-    print(f"{'-' * 3:>3}  {'-' * 14:<14}  {'-' * 40}")
-    for idx, (x2, demos) in enumerate(SPECS):
-        print(f"{idx:>3}  {','.join(x2):<14}  {','.join(demos)}")
-    print(f"\nTotal: {len(SPECS)} specs")
+def cmd_list(args: argparse.Namespace) -> int:
+    specs = build_specs(args.grid)
+    print(f"{'idx':>3}  {'X2':<14}  {'demos':<34}  cost")
+    print(f"{'-' * 3:>3}  {'-' * 14:<14}  {'-' * 34:<34}  {'-' * 8}")
+    for idx, (x2, demos, cost) in enumerate(specs):
+        cost_s = ','.join(cost) if cost is not None else '(truth)'
+        print(f"{idx:>3}  {','.join(x2):<14}  {','.join(demos):<34}  {cost_s}")
+    print(f"\nTotal: {len(specs)} specs  (grid={args.grid})")
     return 0
 
 
 def dispatch_one(args: argparse.Namespace, idx: int) -> int:
-    if idx < 0 or idx >= len(SPECS):
-        print(f"spec-index {idx} out of range [0, {len(SPECS)})", file=sys.stderr)
+    specs = build_specs(args.grid)
+    if idx < 0 or idx >= len(specs):
+        print(f"spec-index {idx} out of range [0, {len(specs)})", file=sys.stderr)
         return 2
-    x2, demos = SPECS[idx]
-    label = spec_label(x2, demos)
+    x2, demos, cost = specs[idx]
+    label = spec_label(x2, demos, cost)
     sdir = spec_dir(args, label)
     summary_path = os.path.join(sdir, "estimates_summary.csv")
     if os.path.exists(summary_path):
@@ -131,7 +168,9 @@ def dispatch_one(args: argparse.Namespace, idx: int) -> int:
         "--demos-vars", ",".join(demos),
         "--spec-label", label,
     ]
-    print(f"[run ] spec {idx}/{len(SPECS) - 1}  {label}")
+    if cost is not None:
+        cmd += ["--cost-vars", ",".join(cost)]
+    print(f"[run ] spec {idx}/{len(specs) - 1}  {label}")
     print("       $ " + " ".join(cmd))
     res = subprocess.run(cmd, cwd=here)
     return res.returncode
@@ -149,8 +188,8 @@ def aggregate(args: argparse.Namespace) -> int:
     rows: list[pd.DataFrame] = []
     n_found = 0
     n_missing = 0
-    for idx, (x2, demos) in enumerate(SPECS):
-        label = spec_label(x2, demos)
+    for idx, (x2, demos, cost) in enumerate(build_specs(args.grid)):
+        label = spec_label(x2, demos, cost)
         sdir = os.path.join(specs_root, f"spec_{label}")
         csv = os.path.join(sdir, "estimates_summary.csv")
         if not os.path.exists(csv):
@@ -161,6 +200,8 @@ def aggregate(args: argparse.Namespace) -> int:
         df.insert(1, "spec_label", label)
         df.insert(2, "x2_vars", ",".join(x2))
         df.insert(3, "demo_vars", ",".join(demos))
+        # cost_vars: 'w1,w2' (truth) for the demand-only grid where cost is None.
+        df.insert(4, "cost_vars", ",".join(cost) if cost is not None else "w1,w2")
         rows.append(df)
         n_found += 1
     if not rows:
@@ -205,7 +246,7 @@ def aggregate(args: argparse.Namespace) -> int:
 def main() -> int:
     args = parse_args()
     if args.list:
-        return cmd_list()
+        return cmd_list(args)
     if args.aggregate_only:
         return aggregate(args)
     if args.spec_index is not None:
@@ -223,7 +264,7 @@ def main() -> int:
 
     # Default: run every spec sequentially, then aggregate.
     rc = 0
-    for idx in range(len(SPECS)):
+    for idx in range(len(build_specs(args.grid))):
         r = dispatch_one(args, idx)
         if r != 0 and rc == 0:
             rc = r
