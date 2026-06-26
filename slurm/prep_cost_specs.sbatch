@@ -6,6 +6,11 @@
 # (the SAME DGP as the local validation tree) so the array job has its inputs.
 # Idempotent: skips simulation if truth.pkl already exists.
 #
+# It also refreshes the OAK clone to the latest committed code first (clone-or-
+# update, pinned to the add-solve-diagnostics branch), so it works turnkey from
+# the OnDemand UI with no manual `git pull`. Because this job runs first, the
+# array + aggregate jobs that follow read the freshly-updated code.
+#
 # Submit this FIRST, then chain the array + aggregate on it (afterok):
 #   PREP=$(sbatch --parsable slurm/prep_cost_specs.sbatch)
 #   ARR=$(sbatch  --parsable --dependency=afterok:$PREP \
@@ -22,10 +27,37 @@
 set -euo pipefail
 mkdir -p slurm/logs
 
-# Move to the repo root. Defaults to the OAK clone (as in main_job.sh /
-# postprocess.sbatch); override with --export=ALL,PROJECT_DIR=/path/to/repo.
+# -----------------------------------------------------------------------------
+# Code refresh (clone-or-update), so submitting through the OnDemand UI always
+# runs the latest committed code — no manual `git pull` on the login node. This
+# is the single place the shared OAK clone is updated: it runs FIRST in the
+# chain, before the 60-task array, so the array tasks read fresh code without
+# each having to `git reset` (which would race on the shared clone).
+#
+# Mirrors main_job.sh's clone-or-update, but PINS the branch carrying the
+# --grid cube / persistent-product code (main does NOT have it yet). First run:
+# clone that branch. Later runs: fetch + `reset --hard` to its tip. `reset
+# --hard` only touches tracked files, so the untracked output/ tree (and its
+# resume state) is preserved; it also discards any uncommitted edits made on the
+# Sherlock copy — intentional, this is a disposable working copy. Override on
+# the sbatch line, e.g.  --export=ALL,BRANCH=main  or  ...,PROJECT_DIR=/path.
+# -----------------------------------------------------------------------------
+REPO_URL="${REPO_URL:-https://github.com/afsuarezg/rcl_synthetic_data.git}"
+BRANCH="${BRANCH:-add-solve-diagnostics}"
 PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
-cd "$PROJECT_DIR" || { echo "ERROR: PROJECT_DIR=$PROJECT_DIR not found" >&2; exit 1; }
+
+if [ ! -d "$PROJECT_DIR/.git" ]; then
+    echo "[$(date -Iseconds)] cloning $REPO_URL ($BRANCH) into $PROJECT_DIR"
+    git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT_DIR"
+    cd "$PROJECT_DIR"
+else
+    cd "$PROJECT_DIR"
+    echo "[$(date -Iseconds)] updating $PROJECT_DIR to origin/$BRANCH"
+    git fetch --quiet origin
+    git reset --hard "origin/$BRANCH"
+fi
+git log --oneline -1
+
 if [ ! -f pyproject.toml ]; then
     echo "ERROR: no pyproject.toml in $PWD — set PROJECT_DIR to the repo root." >&2
     exit 1
