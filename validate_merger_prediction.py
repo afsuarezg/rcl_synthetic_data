@@ -185,16 +185,30 @@ def run_single(seed_dir: Path) -> None:
 # Mode 2: sweep all 60 demand specifications (multiple_specs/seed_0)
 # ---------------------------------------------------------------------------
 
-def best_start_id(summ: pd.DataFrame) -> int | None:
-    """Lowest-objective non-errored start (mirrors run_specs best_per_spec)."""
+def starts_by_objective(summ: pd.DataFrame) -> list[int]:
+    """Start ids ordered by ascending objective, dropping errored (NaN) starts.
+
+    The first element is the best start (mirrors run_specs best_per_spec); the
+    rest are the next-best fallbacks used when the best pickle fails to load.
+    """
     per = summ.groupby("start_id", as_index=False)["objective"].first()
     per = per[per["objective"].notna()]
-    if per.empty:
+    return [int(s) for s in per.sort_values("objective")["start_id"].tolist()]
+
+
+def _predict_pickle(pkl: Path, label: str, sid: int, p_true_post, p_pre,
+                    merge_ids, orig_ids, is_merging) -> dict | None:
+    """Load one start pickle and run predict_from; warn & return None on failure."""
+    try:
+        with pkl.open("rb") as fh:
+            res = pickle.load(fh)
+        return predict_from(res, p_true_post, p_pre, merge_ids, orig_ids, is_merging)
+    except Exception as exc:                            # noqa: BLE001 - log & skip
+        warnings.warn(f"{label} start {sid}: {exc.__class__.__name__}: {exc}")
         return None
-    return int(per.sort_values("objective").iloc[0]["start_id"])
 
 
-def run_sweep(seed_dir: Path, mode: str) -> None:
+def run_sweep(seed_dir: Path, mode: str, all_starts: bool = False) -> None:
     pre, p_pre, orig_ids, merge_ids, is_merging = setup(seed_dir)
     p_true_post, bench = truth_benchmark(seed_dir, p_pre, merge_ids, orig_ids, is_merging)
 
@@ -214,20 +228,37 @@ def run_sweep(seed_dir: Path, mode: str) -> None:
         if not summ_path.exists():
             continue
         summ = pd.read_csv(summ_path)
-        bid = best_start_id(summ)
+        ordered = starts_by_objective(summ)
+        bid = ordered[0] if ordered else None
+        est_dir = sd / "estimates"
         per_start = []
-        for pkl in sorted((sd / "estimates").glob("start_*.pkl")):
-            sid = int(pkl.stem.split("_")[1])
-            try:
-                with pkl.open("rb") as fh:
-                    res = pickle.load(fh)
-                m = predict_from(res, p_true_post, p_pre, merge_ids, orig_ids, is_merging)
-            except Exception as exc:                       # noqa: BLE001 - log & skip
-                warnings.warn(f"{label} start {sid}: {exc.__class__.__name__}: {exc}")
-                continue
-            m.update(spec_label=label, start_id=sid, is_best=(sid == bid))
-            per_start.append(m)
-            long_rows.append(m)
+        if all_starts:
+            # Original behavior: predict_from on every start (full per-start spread).
+            for pkl in sorted(est_dir.glob("start_*.pkl")):
+                sid = int(pkl.stem.split("_")[1])
+                m = _predict_pickle(pkl, label, sid, p_true_post, p_pre,
+                                    merge_ids, orig_ids, is_merging)
+                if m is None:
+                    continue
+                m.update(spec_label=label, start_id=sid, is_best=(sid == bid))
+                per_start.append(m)
+                long_rows.append(m)
+        else:
+            # Default: every downstream report (37, 38-40, 41) uses only the best
+            # start per spec, so simulate just that one -- ~60 predict_from calls
+            # instead of 60*N. Walk starts by ascending objective and stop at the
+            # first that loads, falling back to the next-best if the best pickle is
+            # missing/corrupt so the spec never silently drops out of the reports.
+            for sid in ordered:
+                pkl = est_dir / f"start_{sid:02d}.pkl"
+                m = _predict_pickle(pkl, label, sid, p_true_post, p_pre,
+                                    merge_ids, orig_ids, is_merging)
+                if m is None:
+                    continue
+                m.update(spec_label=label, start_id=sid, is_best=(sid == bid))
+                per_start.append(m)
+                long_rows.append(m)
+                break
         if not per_start:
             continue
         pdf = pd.DataFrame(per_start)
@@ -272,8 +303,9 @@ def run_sweep(seed_dir: Path, mode: str) -> None:
     print(f"\n  specs with wrong-sign Δp (corr<0): {n_wrong} / {len(spec_df)}")
     print(f"  Δ-HHI error range: [{spec_df.delta_hhi_err.min():+.1f}, "
           f"{spec_df.delta_hhi_err.max():+.1f}]  (true Δ-HHI = {bench['true_delta_hhi']:+.1f})")
+    scope = "all starts" if all_starts else "best start per spec"
     print(f"\n  wrote {out_by_spec}  ({len(spec_df)} specs)")
-    print(f"  wrote {out_long}  ({len(long_rows)} spec-start rows)")
+    print(f"  wrote {out_long}  ({len(long_rows)} spec-start rows, {scope})")
 
 
 # ---------------------------------------------------------------------------
@@ -350,12 +382,17 @@ def parse_args() -> argparse.Namespace:
                    help="run the 60-spec sweep instead of the single-seed validation")
     p.add_argument("--per-product", action="store_true",
                    help="write per-merging-observation truth vs best-spec predicted "
-                        "%Δprice (needs the --sweep CSV); default seed output/multiple_specs/seed_0")
+                        "%%Δprice (needs the --sweep CSV); default seed output/multiple_specs/seed_0")
     p.add_argument("--seed-dir", type=Path, default=None,
                    help="seed dir (default: output/unique_spec/seed_0 single, "
                         "output/multiple_specs/seed_0 sweep)")
     p.add_argument("--mode", choices=["iv_both", "iv_diff_only"], default="iv_both",
                    help="instrument mode for --sweep (default iv_both)")
+    p.add_argument("--all-starts", action="store_true",
+                   help="run predict_from on every estimation start (original "
+                        "behavior, slow: 60*N_starts merger solves). Default: best "
+                        "start per spec only (~60 solves), which is all every "
+                        "downstream report uses")
     return p.parse_args()
 
 
@@ -366,7 +403,7 @@ def main() -> None:
         run_per_product(seed_dir, args.mode)
     elif args.sweep:
         seed_dir = args.seed_dir or Path("output/multiple_specs/seed_0")
-        run_sweep(seed_dir, args.mode)
+        run_sweep(seed_dir, args.mode, all_starts=args.all_starts)
     else:
         seed_dir = args.seed_dir or Path("output/unique_spec/seed_0")
         run_single(seed_dir)
