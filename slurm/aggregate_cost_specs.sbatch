@@ -40,6 +40,29 @@ mkdir -p slurm/logs
 # postprocess.sbatch); override with --export=ALL,PROJECT_DIR=/path/to/repo.
 PROJECT_DIR="${PROJECT_DIR:-/oak/stanford/groups/polinsky/rcl_synthetic_data}"
 cd "$PROJECT_DIR" || { echo "ERROR: PROJECT_DIR=$PROJECT_DIR not found" >&2; exit 1; }
+
+# Sync code so each submission runs the intended branch, not "whatever the OAK
+# clone was left on" -- no manual git pull after pushing local changes. checkout
+# -f -B (not `git pull`) makes the result independent of the previously checked-
+# out branch (pull only fast-forwards the CURRENT branch; if the clone sits on
+# another branch the working tree never moves -> silent stale run). Destructive
+# to *tracked* files only; output/ is gitignored, so generated data + resume
+# state are untouched. sbatch runs a submit-time snapshot, so overwriting this
+# script mid-run is safe. Override the ref with --export=ALL,GIT_REF=main; skip
+# syncing (run hand-edited on-disk code) with --export=ALL,GIT_PULL=0.
+GIT_REF="${GIT_REF:-add-solve-diagnostics}"
+if [ "${GIT_PULL:-1}" != "0" ]; then
+    echo "[$(date -Iseconds)] syncing $PROJECT_DIR -> origin/$GIT_REF"
+    git fetch origin --quiet --prune
+    if ! git rev-parse --verify --quiet "origin/$GIT_REF" >/dev/null; then
+        echo "ERROR: origin/$GIT_REF not found after fetch." >&2
+        echo "       Set GIT_REF to a branch that has been pushed to origin." >&2
+        exit 1
+    fi
+    git checkout -f -B "$GIT_REF" "origin/$GIT_REF"
+    echo "[$(date -Iseconds)] now at $(git rev-parse --short HEAD) on $(git rev-parse --abbrev-ref HEAD)"
+fi
+
 if [ ! -f pyproject.toml ]; then
     echo "ERROR: no pyproject.toml in $PWD — set PROJECT_DIR to the repo root." >&2
     exit 1
