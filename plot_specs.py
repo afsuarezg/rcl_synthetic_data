@@ -112,6 +112,26 @@ def _rmse(values: np.ndarray) -> float:
     return float(np.sqrt(np.mean(v ** 2))) if v.size else float('nan')
 
 
+def _good_window(values, truth, pad_frac: float = 0.25) -> tuple[float, float]:
+    """A readable value-axis window that brackets the well-behaved `values` and
+    the `truth` reference, padded by `pad_frac` of the span. Pair with
+    _clip_with_outlier_markers(bounds=...) so a handful of blow-ups become edge
+    triangles instead of stretching the axis. Replaces hand-tuned literal windows
+    that silently mismatch the data (e.g. a window that excludes truth itself).
+    Falls back to a small symmetric window around truth when the good set is
+    empty or collapses to a single value."""
+    v = [float(x) for x in values if np.isfinite(x)]
+    pts = v + [float(truth)]
+    lo, hi = min(pts), max(pts)
+    span = hi - lo
+    if span <= 0:
+        span = max(abs(float(truth)) * 0.05, 1.0)
+        lo -= 0.5 * span
+        hi += 0.5 * span
+    pad = pad_frac * span
+    return (lo - pad, hi + pad)
+
+
 def _fig_height(n_rows: int, per_row: float = 0.18, min_h: float = 4.0,
                 max_h: float = 22.0) -> float:
     return max(min_h, min(max_h, per_row * n_rows + 1.0))
@@ -128,7 +148,8 @@ def _hue_colors(values, hue, palette='tab10'):
 
 def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
                                colors=None, color=COL_REF, marker_size=40,
-                               bounds=None, label_rotation=0):
+                               bounds=None, label_rotation=0,
+                               label_outliers=True):
     """Clip the value-axis to Tukey 3*IQR bounds; render out-of-range points as
     labeled edge triangles instead of letting them stretch the axis.
 
@@ -152,6 +173,10 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
     annotation_clip=False (matplotlib otherwise drops annotations whose data-xy
     falls outside the axes). label_rotation rotates them (e.g. 90 for dense
     clusters); the default 0 keeps the original horizontal placement.
+
+    label_outliers=False draws the edge triangles only (no value text) -- use it
+    when many points fall outside the window, where per-point labels would
+    collide into an illegible band and overrun the titles (cf. #37/#41).
     """
     # A tight clip otherwise triggers matplotlib's '1e-9' offset stamp. Only a
     # ScalarFormatter supports these toggles; a categorical axis has none.
@@ -224,23 +249,25 @@ def _clip_with_outlier_markers(ax, positions, values, *, orient='v',
             marker = '^' if high else 'v'
             ax.scatter([p], [edge], marker=marker, color=c, s=marker_size + 20,
                        edgecolor='black', linewidth=0.8, zorder=5, clip_on=False)
-            ax.annotate(label, xy=(p, edge),
-                        xytext=(0, -10 if high else 10),
-                        textcoords='offset points', ha='center',
-                        va='top' if high else 'bottom', fontsize=7, zorder=6,
-                        bbox=bbox, annotation_clip=False,
-                        rotation=label_rotation, rotation_mode='anchor')
+            if label_outliers:
+                ax.annotate(label, xy=(p, edge),
+                            xytext=(0, -10 if high else 10),
+                            textcoords='offset points', ha='center',
+                            va='top' if high else 'bottom', fontsize=7, zorder=6,
+                            bbox=bbox, annotation_clip=False,
+                            rotation=label_rotation, rotation_mode='anchor')
         else:
             marker = '>' if high else '<'
             ax.scatter([edge], [p], marker=marker, color=c, s=marker_size + 20,
                        edgecolor='black', linewidth=0.8, zorder=5, clip_on=False)
-            ax.annotate(label, xy=(edge, p),
-                        xytext=(-10 if high else 10, 0),
-                        textcoords='offset points',
-                        ha='right' if high else 'left', va='center',
-                        fontsize=7, zorder=6, bbox=bbox,
-                        annotation_clip=False,
-                        rotation=label_rotation, rotation_mode='anchor')
+            if label_outliers:
+                ax.annotate(label, xy=(edge, p),
+                            xytext=(-10 if high else 10, 0),
+                            textcoords='offset points',
+                            ha='right' if high else 'left', va='center',
+                            fontsize=7, zorder=6, bbox=bbox,
+                            annotation_clip=False,
+                            rotation=label_rotation, rotation_mode='anchor')
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +384,11 @@ def plot_objective_spec_comparison(df: pd.DataFrame, out_dir: Path) -> None:
     ax.invert_yaxis()
     ax.set_xlabel('GMM objective')
     ax.set_title('36. Objective by specification (mean ± std, range)')
-    ax.legend(loc='lower right')
+    # Outside the axes (upper right): in-axes corners all collide -- the long
+    # min/max whiskers fill the right, the bottom rows have the widest spread,
+    # and the n= ticks sit at the right edge.
+    ax.legend(loc='upper left', bbox_to_anchor=(1.06, 1.0), fontsize=8,
+              framealpha=0.9)
     sns.despine(ax=ax)
     _save(fig, out_dir, '36_objective_spec_comparison.png')
 
@@ -648,7 +679,12 @@ def plot_param_stability(df: pd.DataFrame, out_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(max(10, 0.35 * len(cols)),
                                     _fig_height(len(pivot), per_row=0.22,
                                                 min_h=6, max_h=28)))
-    sns.heatmap(pivot, cmap='magma_r', cbar_kws={'label': 'std across perturbed starts'},
+    # robust=True: a few specs leave the gamma_* (cost) params with std in the
+    # thousands, which otherwise stretches the colour scale so every other cell
+    # reads as the same near-zero colour. Cap the range at the 2-98% quantiles so
+    # within-spec variation is visible; the handful of blow-up cells saturate.
+    sns.heatmap(pivot, cmap='magma_r', robust=True,
+                cbar_kws={'label': 'std across perturbed starts (2–98% colour range)'},
                 ax=ax, linewidths=0)
     ax.set_yticklabels([_abbrev(s) for s in pivot.index], fontsize=8, rotation=0)
     ax.set_xticklabels(pivot.columns, fontsize=8, rotation=90)
@@ -1198,25 +1234,32 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
     colors = [COL_FAR if e else COL_NEAR for e in df['has_edu']]
     true_dp = float(df['bench_true_dp_merging_pct'].iloc[0])
     true_hhi = float(df['bench_true_delta_hhi'].iloc[0])
-    n_bad = int(((df['pred_dp_merging_pct'].abs() >= 10) | (df['corr_dp'] <= 0.5)).sum())
+    degenerate = (df['pred_dp_merging_pct'].abs() >= 10) | (df['corr_dp'] <= 0.5)
+    good = ~degenerate
+    n_bad = int(degenerate.sum())
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
-    # (column, truth value, truth label, y label, clip window). The window keeps
-    # every well-behaved point in view; blow-ups become edge triangles.
+    # (column, truth value, truth label, y label). Each y-axis is clipped to a
+    # window derived from the NON-degenerate specs + truth (see _good_window), so
+    # the well-behaved cluster and the truth line stay readable while degenerate
+    # specs fall outside as edge triangles. label_outliers=False: with most specs
+    # degenerate, labelling each blow-up produced an illegible band that overran
+    # the titles -- the count is in the suptitle and the values in text report #37.
     panels = [('pred_dp_merging_pct', true_dp, f'truth = {true_dp:+.2f}%',
-               'merging-firm Δprice (%)', (1.5, 4.0)),
+               'merging-firm Δprice (%)'),
               ('pred_delta_hhi', true_hhi, f'truth = {true_hhi:+.0f}',
-               'Δ-HHI (merger)', (680.0, 740.0))]
-    for ax, (col, tval, tlabel, ylabel, bounds) in zip(axes, panels):
+               'Δ-HHI (merger)')]
+    for ax, (col, tval, tlabel, ylabel) in zip(axes, panels):
         ax.scatter(x, df[col], c=colors, s=34, edgecolor='white', zorder=3)
         ax.axhline(tval, color=COL_REF, ls='--', lw=1.2, zorder=2)
+        window = _good_window(df.loc[good, col], tval)
         _clip_with_outlier_markers(ax, x.tolist(), df[col].tolist(), orient='v',
-                                   colors=colors, bounds=bounds, label_rotation=90)
+                                   colors=colors, bounds=window,
+                                   label_outliers=False)
         ax.set_xlabel('spec rank (sorted by price RMSE, best first)')
         ax.set_ylabel(ylabel)
-        ax.set_title(col)
-        # bottom-left: free of both the in-window cluster and the right-side
-        # edge-label columns (which the bottom-right corner now collides with).
+        ax.set_title(col, pad=18)  # clear the dense top-edge triangle row
+        # bottom-left: clear of the in-window cluster.
         ax.text(0.02, 0.04, tlabel, transform=ax.transAxes, ha='left',
                 va='bottom', fontsize=8, color=COL_REF)
         sns.despine(ax=ax)
@@ -1231,7 +1274,7 @@ def plot_merger_prediction(by_spec: pd.DataFrame, out_dir: Path) -> None:
     axes[0].legend(handles=handles, loc='best', fontsize=8, framealpha=0.9)
     fig.suptitle(f'37. Merger prediction by demand spec '
                  f'({n_bad}/{len(df)} degenerate, all include education)')
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     _save(fig, out_dir, '37_merger_prediction.png')
 
 
@@ -1451,7 +1494,7 @@ def plot_merger_vs_rivals(by_spec_long: pd.DataFrame, by_spec: pd.DataFrame,
     # only when few specs, else numeric ranks on the x-axis (cf. #37).
     n = len(order)
     label_specs = n <= 15
-    fig, ax = plt.subplots(figsize=(min(16.0, max(7.0, 0.5 * n + 4)), 5.0))
+    fig, ax = plt.subplots(figsize=(min(16.0, max(7.0, 0.5 * n + 4)), 5.5))
 
     def _series(col, dx):
         sub = long[long['spec_label'].isin(pos)].copy()
@@ -1470,9 +1513,11 @@ def plot_merger_vs_rivals(by_spec_long: pd.DataFrame, by_spec: pd.DataFrame,
     ax.axhline(true_r, color=col_r, ls='--', lw=1.2, zorder=2)
 
     # Clip to a readable window; degenerate predictions become edge triangles.
+    # label_outliers=False: ~half the starts blow up to thousands of percent, so
+    # per-point value labels would collide into a band over the title (cf. #37).
     _clip_with_outlier_markers(ax, xm + xr, ym + yr, orient='v',
                                colors=[col_m] * len(xm) + [col_r] * len(xr),
-                               bounds=(-1.0, 5.0), label_rotation=90)
+                               bounds=(-1.0, 5.0), label_outliers=False)
 
     ax.set_xticks(range(n))
     if label_specs:
@@ -1490,10 +1535,16 @@ def plot_merger_vs_rivals(by_spec_long: pd.DataFrame, by_spec: pd.DataFrame,
         Line2D([], [], color=col_m, ls='--', lw=1.2, label=f'truth merging = {true_m:+.2f}%'),
         Line2D([], [], color=col_r, ls='--', lw=1.2, label=f'truth rivals = {true_r:+.2f}%'),
     ]
-    ax.legend(handles=handles, loc='best', fontsize=8, framealpha=0.9)
-    ax.set_title('41. Merging-firm vs rival price response: predicted (per start) vs truth')
+    # Outside the axes: with most starts degenerate, the top/bottom edges fill
+    # with triangles and an in-axes 'best' legend lands on top of them.
+    ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(1.0, 1.0),
+              fontsize=8, framealpha=0.9)
     sns.despine(ax=ax)
-    fig.tight_layout()
+    # suptitle (not ax.set_title): the top-edge triangle row sits just above the
+    # axes with clip_on=False, so an axis title collides with it regardless of
+    # pad; a figure-level title in the reserved top margin clears it (cf. #37).
+    fig.suptitle('41. Merging-firm vs rival price response: predicted (per start) vs truth')
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     _save(fig, out_dir, '41_merger_vs_rivals.png')
 
 
